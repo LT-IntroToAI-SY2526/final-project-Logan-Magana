@@ -77,7 +77,13 @@ def _resolve_faces(sprite, size, side_style, use_3d_renders=True):
         grid  = VoxelGrid.build(sprite)
         grid  = smooth_grid(grid)
         bg    = get_bg_color(sprite)
-        return render_all_faces(grid, face_size=size, bg=bg)
+        faces = render_all_faces(grid, face_size=size, bg=bg)
+        # Override front/back with original sprite so black line art is preserved
+        # on those faces. Side/top/bottom come from the de-outlined voxel model.
+        faces["front"] = prepare_front_face(sprite, size)
+        faces["back"]  = prepare_front_face(
+            sprite.transpose(Image.FLIP_LEFT_RIGHT), size)
+        return faces
     return {
         "front":  prepare_front_face(sprite, size),
         "top":    _make_side(size, side_style, sprite),

@@ -30,12 +30,14 @@ MAX_DIM = 64
 REGION_HEAD  = 0
 REGION_TORSO = 1
 REGION_LIMB  = 2
+REGION_TUFT  = 3   # narrow top protrusion: feathers, hair tufts, antennae
 
-# Chibi proportions: head ≈ torso mass, limbs thin
+# Chibi proportions: head ≈ torso mass, limbs thin, tufts shallow
 REGION_MAX_DEPTH: dict[int, int] = {
     REGION_HEAD:  16,
     REGION_TORSO: 14,
     REGION_LIMB:  8,
+    REGION_TUFT:  5,   # thin protruding accent — minimal depth
 }
 MAX_DEPTH      = 16   # deeper extrusion — side profile has real sculptural mass
 DARK_THRESHOLD = 55   # max(r,g,b) below this → treat as line art, not structure
@@ -112,6 +114,17 @@ def classify_regions(occupied: np.ndarray) -> np.ndarray:
         he = first[0] + max(1, (first[1] - first[0]) // 4)
         region_map[first[0]:he, :] = REGION_HEAD
 
+    # Detect narrow top protrusions (tufts, feathers, antennae).
+    # If the topmost segment is < 45 % as wide as the widest segment it's
+    # a TUFT — give it shallow depth so it doesn't protrude like a solid block.
+    if len(segments) >= 2 and segments[0][2] < widest * 0.45:
+        t_start, t_end, _ = segments[0]
+        region_map[t_start:t_end, :] = REGION_TUFT
+        # Also mark any occupied pixels above main head that are still narrow
+        for y in range(t_end, min(t_end + 4, H)):
+            if occupied[y, :].sum() < widest * 0.45:
+                region_map[y, :] = REGION_TUFT
+
     return region_map
 
 
@@ -133,6 +146,44 @@ def detect_dark_pixels(colors: np.ndarray, occupied: np.ndarray) -> np.ndarray:
     """Max-channel brightness below DARK_THRESHOLD → line art, not structure."""
     brightness = colors[:, :, :3].max(axis=2)
     return occupied & (brightness.astype(np.int32) < DARK_THRESHOLD)
+
+
+
+def deoutline_sprite(sprite: Image.Image) -> Image.Image:
+    """
+    Replace dark outline pixels with the color of their nearest bright interior
+    pixel before voxelization.  The voxelizer never sees outline pixels as
+    structure, which eliminates black shells, simplifies depth inheritance,
+    and fixes black-row side renders at the source.
+
+    The original sprite is kept intact for the PDF front/back faces.
+    """
+    rgba     = np.array(sprite.convert("RGBA"), dtype=np.uint8)
+    is_bg    = _bg_mask(rgba)
+    occupied = ~is_bg
+    colors   = rgba[:, :, :3].copy()
+
+    # Only replace pixels that are TOUCHING the background (4-connectivity).
+    # Interior dark pixels like eyes are never adjacent to background so they
+    # are left completely untouched — no more washed-out eyes.
+    is_outline = detect_outlines(occupied)          # True only at silhouette edge
+    interior   = occupied & ~is_outline
+
+    if not interior.any() or not is_outline.any():
+        return sprite   # nothing to do
+
+    try:
+        from scipy.ndimage import distance_transform_edt
+        _, nearest = distance_transform_edt(~interior, return_indices=True)
+        result = rgba.copy()
+        ys, xs = np.where(is_outline)
+        for y, x in zip(ys, xs):
+            ny, nx           = int(nearest[0][y, x]), int(nearest[1][y, x])
+            result[y, x, :3] = colors[ny, nx]   # inherit nearest interior color
+            result[y, x,  3] = rgba[y, x, 3]    # keep original alpha
+        return Image.fromarray(result, "RGBA")
+    except ImportError:
+        return sprite
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -236,7 +287,7 @@ def apply_symmetry(
             continue
         x_center = (int(xs[0]) + int(xs[-1])) / 2.0
         for x in xs:
-            if int(region_map[y, x]) == REGION_LIMB:
+            if int(region_map[y, x]) in (REGION_LIMB, REGION_TUFT):
                 continue
             x_m = int(round(2 * x_center - x))
             if 0 <= x_m < W and occupied[y, x_m]:
@@ -259,7 +310,10 @@ class VoxelGrid:
 
     @classmethod
     def build(cls, sprite: Image.Image) -> "VoxelGrid":
-        rgba, occupied, colors = preprocess(sprite)
+        # Strip dark outline pixels before voxelization — they are visual line
+        # art, not structural data.  Front/back PDF faces still use the original.
+        sprite_vox = deoutline_sprite(sprite)
+        rgba, occupied, colors = preprocess(sprite_vox)
         H, W = occupied.shape
 
         region_map = classify_regions(occupied)
@@ -342,14 +396,31 @@ def _render_side(grid, is_left, shade, face_size, bg):
     H, W, D = occ.shape
     surface_x = (_cull_surface(occ, axis=1, from_back=False) if is_left
                  else _cull_surface(occ, axis=1, from_back=True))
-    col_front = col[:, :, 0, :]
-    occ_front = occ[:, :, 0]
+    any_occ   = occ.any(axis=2)
+    first_z   = np.argmax(occ, axis=2)
+    col_front = col[np.arange(H)[:,None], np.arange(W)[None,:], first_z, :]
+    occ_front = any_occ
+    row_widths = occ_front.sum(axis=1)
+    max_width  = max(int(row_widths.max()), 1)
     result = np.full((H, D, 3), bg, dtype=np.float32)
     for y in range(H):
         row_mask = occ_front[y, :]
         if not row_mask.any():
             continue
-        rep       = _rep_color(col_front[y], row_mask, min_bright=65)
+        rep = _rep_color(col_front[y], row_mask, min_bright=50)
+        # Thin seam rows (neck, waist) have only outline pixels → rep is black.
+        # Borrow color from nearest full-width neighbour row instead.
+        if row_widths[y] < max_width * 0.18 and rep.max() < 35:
+            for dy in range(1, 10):
+                found = False
+                for yn in [y - dy, y + dy]:
+                    if 0 <= yn < H and row_widths[yn] >= max_width * 0.18:
+                        rep_n = _rep_color(col_front[yn], occ_front[yn, :], min_bright=50)
+                        if rep_n.max() >= 35:
+                            rep, found = rep_n, True
+                            break
+                if found:
+                    break
         z_surface = surface_x[y, :, :].any(axis=0)
         if not z_surface.any():
             z_surface = occ[y, :, :].any(axis=0)
@@ -370,8 +441,12 @@ def _render_top_bottom(grid, is_top, shade, face_size, bg):
     H, W, D = occ.shape
     surface_y = (_cull_surface(occ, axis=0, from_back=False) if is_top
                  else _cull_surface(occ, axis=0, from_back=True))
-    col_front = col[:, :, 0, :]
-    occ_front = occ[:, :, 0]
+    any_occ   = occ.any(axis=2)
+    first_z   = np.argmax(occ, axis=2)
+    col_front = col[np.arange(H)[:,None], np.arange(W)[None,:], first_z, :]
+    occ_front = any_occ
+    col_widths = occ_front.sum(axis=0)          # how many pixels per column
+    max_height = max(int(col_widths.max()), 1)
     result = np.full((D, W, 3), bg, dtype=np.float32)
     for x in range(W):
         col_mask = occ_front[:, x]
@@ -380,11 +455,24 @@ def _render_top_bottom(grid, is_top, shade, face_size, bg):
         top_col = None
         y_range = range(H) if is_top else range(H - 1, -1, -1)
         for y in y_range:
-            if col_mask[y] and col_front[y, x, :].max() >= 65:
+            if col_mask[y] and col_front[y, x, :].max() >= 50:
                 top_col = col_front[y, x, :].astype(np.float32)
                 break
         if top_col is None:
-            top_col = _rep_color(col_front[:, x], col_mask, min_bright=65)
+            top_col = _rep_color(col_front[:, x], col_mask, min_bright=50)
+        # Thin columns: borrow from nearest wider neighbour
+        if col_widths[x] < max_height * 0.18 and (top_col is None or top_col.max() < 35):
+            for dx in range(1, 10):
+                found = False
+                for xn in [x - dx, x + dx]:
+                    if 0 <= xn < W and col_widths[xn] >= max_height * 0.18:
+                        rep_n = _rep_color(col_front[:, xn], occ_front[:, xn], min_bright=50)
+                        if rep_n.max() >= 35:
+                            top_col = rep_n
+                            found   = True
+                            break
+                if found:
+                    break
         z_surface = surface_y[:, x, :].any(axis=0)
         if not z_surface.any():
             z_surface = occ[:, x, :].any(axis=0)
@@ -523,11 +611,9 @@ def export_grid_json(grid: VoxelGrid) -> dict:
                 z0     = int(occ_zs[0]) if len(occ_zs) > 0 else 0
                 front_colors[y, x] = grid.colors[y, x, z0]
 
-    # Selective color blend: ONLY border outline pixels (pixels touching the
-    # background silhouette edge) get blended toward nearest interior color.
-    # Interior dark pixels (eyes, hair, facial features) keep original color.
-    # This removes the black column on side faces while preserving eye clarity.
-    is_border = detect_outlines(front_occ)   # True only for silhouette-edge pixels
+    # Blend ONLY the 1px silhouette border ring toward interior color.
+    # Interior dark pixels (eyes, features, hair) keep original colors.
+    is_border = detect_outlines(front_occ)
     blended   = _blend_for_viewer(front_colors, front_occ, is_border, blend=0.80)
 
     color_map, region_map = [], []
