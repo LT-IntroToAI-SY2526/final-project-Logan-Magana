@@ -170,7 +170,11 @@ if uploaded:
         grid = VoxelGrid.build(preview_sprite)
         grid = smooth_grid(grid)
         grid_data = export_grid_json(grid)
-    if grid_data.get("voxel_count", 1) == 0:
+    # Check occupancy via depthMap (voxel_count key doesn't exist in export_grid_json)
+    has_voxels = any(grid_data['depthMap'][y][x] > 0
+                     for y in range(grid_data['H'])
+                     for x in range(grid_data['W']))
+    if not has_voxels:
         st.warning("No visible pixels found — check your image has non-transparent content.")
     else:
         viewer_html = load_viewer(grid_data, preview_sprite.width, preview_sprite.height)

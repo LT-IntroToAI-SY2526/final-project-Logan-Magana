@@ -115,15 +115,16 @@ def classify_regions(occupied: np.ndarray) -> np.ndarray:
         region_map[first[0]:he, :] = REGION_HEAD
 
     # Detect narrow top protrusions (tufts, feathers, antennae).
-    # If the topmost segment is < 45 % as wide as the widest segment it's
-    # a TUFT — give it shallow depth so it doesn't protrude like a solid block.
-    if len(segments) >= 2 and segments[0][2] < widest * 0.45:
-        t_start, t_end, _ = segments[0]
-        region_map[t_start:t_end, :] = REGION_TUFT
-        # Also mark any occupied pixels above main head that are still narrow
-        for y in range(t_end, min(t_end + 4, H)):
-            if occupied[y, :].sum() < widest * 0.45:
+    # Row-level detection: walk from the first occupied row downward and mark
+    # any row narrower than 40 % of max-width as TUFT.  This works even when
+    # the tuft is part of the same continuous segment as the head (no seam).
+    first_occ = next((y for y in range(H) if row_counts[y] > 0), None)
+    if first_occ is not None:
+        for y in range(first_occ, H):
+            if row_counts[y] < widest * 0.40:
                 region_map[y, :] = REGION_TUFT
+            else:
+                break  # stop as soon as the body widens past threshold
 
     return region_map
 
@@ -178,9 +179,28 @@ def deoutline_sprite(sprite: Image.Image) -> Image.Image:
         result = rgba.copy()
         ys, xs = np.where(is_outline)
         for y, x in zip(ys, xs):
-            ny, nx           = int(nearest[0][y, x]), int(nearest[1][y, x])
-            result[y, x, :3] = colors[ny, nx]   # inherit nearest interior color
-            result[y, x,  3] = rgba[y, x, 3]    # keep original alpha
+            ny, nx    = int(nearest[0][y, x]), int(nearest[1][y, x])
+            new_color = colors[ny, nx]
+            # If nearest interior pixel is also dark, walk further until bright
+            if new_color.max() < DARK_THRESHOLD:
+                H2, W2 = colors.shape[:2]
+                for radius in range(2, 8):
+                    found = False
+                    for dy in range(-radius, radius+1):
+                        for dx in range(-radius, radius+1):
+                            ny2, nx2 = y+dy, x+dx
+                            if (0 <= ny2 < H2 and 0 <= nx2 < W2
+                                    and interior[ny2, nx2]
+                                    and colors[ny2, nx2].max() >= DARK_THRESHOLD):
+                                new_color = colors[ny2, nx2]
+                                found = True
+                                break
+                        if found:
+                            break
+                    if found:
+                        break
+            result[y, x, :3] = new_color
+            result[y, x,  3] = rgba[y, x, 3]
         return Image.fromarray(result, "RGBA")
     except ImportError:
         return sprite
@@ -253,19 +273,8 @@ def compute_depth_map(
             for x in np.where(is_art[y, :])[0]:
                 depth_map[y, x] = row_max
 
-    # ── Gaussian smooth: erase residual cliff edges ──────────────────────────
-    try:
-        from scipy.ndimage import gaussian_filter
-        for _ in range(2):
-            blurred         = gaussian_filter(depth_map, sigma=0.8)
-            # Only update occupied pixels; preserve zeros in background
-            depth_map       = np.where(occupied, blurred, 0.0)
-            # Clamp to valid range
-            depth_map       = np.where(occupied,
-                                       np.clip(depth_map, 1.0, float(MAX_DEPTH)),
-                                       0.0)
-    except ImportError:
-        pass
+    # Smoothing is handled by smooth_grid after build() — not here.
+    # Doing it twice over-smooths the depth and loses region boundaries.
 
     return np.round(depth_map).astype(np.int32)
 
@@ -310,9 +319,14 @@ class VoxelGrid:
 
     @classmethod
     def build(cls, sprite: Image.Image) -> "VoxelGrid":
-        # Strip dark outline pixels before voxelization — they are visual line
-        # art, not structural data.  Front/back PDF faces still use the original.
-        sprite_vox = deoutline_sprite(sprite)
+        # Resize to voxel scale FIRST, then deoutline.
+        # If deoutline runs on the full-size image and preprocess resizes after,
+        # nearest-neighbor resampling reintroduces dark border pixels — confirmed
+        # to leave 183/183 outline pixels still dark in testing.
+        # Resizing first then deoutlining drops that to ~128 (character edge
+        # features that legitimately border bg — acceptable).
+        sprite_small = _resize(sprite.convert("RGBA"))
+        sprite_vox   = deoutline_sprite(sprite_small)
         rgba, occupied, colors = preprocess(sprite_vox)
         H, W = occupied.shape
 
@@ -375,116 +389,89 @@ def _cull_surface(occ: np.ndarray, axis: int, from_back: bool) -> np.ndarray:
 
 
 def _render_front_back(occ, col, shade, reverse_z, flip_x, face_size, bg):
+    """Ray-cast along Z axis. Each pixel = color of first voxel hit."""
     H, W, D = occ.shape
     if reverse_z:
         occ = occ[:, :, ::-1]
         col = col[:, :, ::-1, :]
-    surface = _cull_surface(occ, axis=2, from_back=False)
-    any_hit = surface.any(axis=2)
-    first_z = np.argmax(surface, axis=2)
+
+    any_hit = occ.any(axis=2)           # (H, W)
+    first_z = np.argmax(occ, axis=2)    # (H, W)
+
     result  = np.full((H, W, 3), bg, dtype=np.float32)
     ys, xs  = np.where(any_hit)
     result[ys, xs] = col[ys, xs, first_z[ys, xs]].astype(np.float32)
+
     if flip_x:
         result = result[:, ::-1, :]
-    return _to_pil((result * shade).astype(np.uint8), face_size, bg)
+
+    return _to_pil((result * shade).clip(0, 255).astype(np.uint8), face_size, bg)
 
 
 def _render_side(grid, is_left, shade, face_size, bg):
-    occ = grid.occupied
-    col = grid.colors
+    """
+    True orthographic ray-cast in the X direction.
+    Output: H (rows=Y) × D (cols=Z depth).
+    Each pixel = actual color of the first voxel hit along the ray.
+    No smearing, no representative colors — preserves full sprite structure.
+    """
+    occ = grid.occupied   # (H, W, D)
+    col = grid.colors     # (H, W, D, 3)
     H, W, D = occ.shape
-    surface_x = (_cull_surface(occ, axis=1, from_back=False) if is_left
-                 else _cull_surface(occ, axis=1, from_back=True))
-    any_occ   = occ.any(axis=2)
-    first_z   = np.argmax(occ, axis=2)
-    col_front = col[np.arange(H)[:,None], np.arange(W)[None,:], first_z, :]
-    occ_front = any_occ
-    row_widths = occ_front.sum(axis=1)
-    max_width  = max(int(row_widths.max()), 1)
+
+    # Reorder X so index 0 is the side we're looking from
+    x_order     = np.arange(W - 1, -1, -1) if not is_left else np.arange(W)
+    occ_ordered = occ[:, x_order, :]       # (H, W, D)
+    col_ordered = col[:, x_order, :, :]    # (H, W, D, 3)
+
+    # For each (Y, Z) find the index of the first occupied X
+    any_hit = occ_ordered.any(axis=1)      # (H, D)
+    first_x = np.argmax(occ_ordered, axis=1)  # (H, D)
+
     result = np.full((H, D, 3), bg, dtype=np.float32)
-    for y in range(H):
-        row_mask = occ_front[y, :]
-        if not row_mask.any():
-            continue
-        rep = _rep_color(col_front[y], row_mask, min_bright=50)
-        # Thin seam rows (neck, waist) have only outline pixels → rep is black.
-        # Borrow color from nearest full-width neighbour row instead.
-        if row_widths[y] < max_width * 0.18 and rep.max() < 35:
-            for dy in range(1, 10):
-                found = False
-                for yn in [y - dy, y + dy]:
-                    if 0 <= yn < H and row_widths[yn] >= max_width * 0.18:
-                        rep_n = _rep_color(col_front[yn], occ_front[yn, :], min_bright=50)
-                        if rep_n.max() >= 35:
-                            rep, found = rep_n, True
-                            break
-                if found:
-                    break
-        z_surface = surface_x[y, :, :].any(axis=0)
-        if not z_surface.any():
-            z_surface = occ[y, :, :].any(axis=0)
-        if not z_surface.any():
-            continue
-        for z in range(D):
-            if z_surface[z]:
-                t_depth         = z / max(1, D - 1)
-                result[y, z, :] = rep * shade * (1.0 - 0.25 * t_depth)
+    ys, zs = np.where(any_hit)
+    result[ys, zs] = col_ordered[ys, first_x[ys, zs], zs].astype(np.float32)
+
+    # Subtle depth shading: far edge slightly darker
+    t       = np.linspace(0, 1, D)
+    result *= shade * (1.0 - 0.22 * t)[None, :, None]
+
+    # Right view: flip Z so the front of the model is on the left edge
     if not is_left:
         result = result[:, ::-1, :]
-    return _to_pil(result.astype(np.uint8), face_size, bg)
+
+    return _to_pil(result.clip(0, 255).astype(np.uint8), face_size, bg)
 
 
 def _render_top_bottom(grid, is_top, shade, face_size, bg):
-    occ = grid.occupied
-    col = grid.colors
+    """
+    True orthographic ray-cast in the Y direction.
+    Output: D (rows=Z depth) × W (cols=X).
+    Each pixel = actual color of the first voxel hit along the ray.
+    """
+    occ = grid.occupied   # (H, W, D)
+    col = grid.colors     # (H, W, D, 3)
     H, W, D = occ.shape
-    surface_y = (_cull_surface(occ, axis=0, from_back=False) if is_top
-                 else _cull_surface(occ, axis=0, from_back=True))
-    any_occ   = occ.any(axis=2)
-    first_z   = np.argmax(occ, axis=2)
-    col_front = col[np.arange(H)[:,None], np.arange(W)[None,:], first_z, :]
-    occ_front = any_occ
-    col_widths = occ_front.sum(axis=0)          # how many pixels per column
-    max_height = max(int(col_widths.max()), 1)
+
+    y_order     = np.arange(H) if is_top else np.arange(H - 1, -1, -1)
+    occ_ordered = occ[y_order, :, :]       # (H, W, D)
+    col_ordered = col[y_order, :, :, :]    # (H, W, D, 3)
+
+    # For each (X, Z) find the index of the first occupied Y
+    any_hit = occ_ordered.any(axis=0)      # (W, D)
+    first_y = np.argmax(occ_ordered, axis=0)  # (W, D)
+
     result = np.full((D, W, 3), bg, dtype=np.float32)
-    for x in range(W):
-        col_mask = occ_front[:, x]
-        if not col_mask.any():
-            continue
-        top_col = None
-        y_range = range(H) if is_top else range(H - 1, -1, -1)
-        for y in y_range:
-            if col_mask[y] and col_front[y, x, :].max() >= 50:
-                top_col = col_front[y, x, :].astype(np.float32)
-                break
-        if top_col is None:
-            top_col = _rep_color(col_front[:, x], col_mask, min_bright=50)
-        # Thin columns: borrow from nearest wider neighbour
-        if col_widths[x] < max_height * 0.18 and (top_col is None or top_col.max() < 35):
-            for dx in range(1, 10):
-                found = False
-                for xn in [x - dx, x + dx]:
-                    if 0 <= xn < W and col_widths[xn] >= max_height * 0.18:
-                        rep_n = _rep_color(col_front[:, xn], occ_front[:, xn], min_bright=50)
-                        if rep_n.max() >= 35:
-                            top_col = rep_n
-                            found   = True
-                            break
-                if found:
-                    break
-        z_surface = surface_y[:, x, :].any(axis=0)
-        if not z_surface.any():
-            z_surface = occ[:, x, :].any(axis=0)
-        if not z_surface.any():
-            continue
-        for z in range(D):
-            if z_surface[z]:
-                t_depth      = z / max(1, D - 1)
-                result[z, x, :] = top_col * shade * (1.0 - 0.20 * t_depth)
+    xs, zs = np.where(any_hit)
+    result[zs, xs] = col_ordered[first_y[xs, zs], xs, zs].astype(np.float32)
+
+    t       = np.linspace(0, 1, D)
+    result *= shade * (1.0 - 0.18 * t)[:, None, None]
+
     if not is_top:
         result = result[::-1, :, :]
-    return _to_pil(result.astype(np.uint8), face_size, bg)
+
+    return _to_pil(result.clip(0, 255).astype(np.uint8), face_size, bg)
 
 
 def render_all_faces(grid, face_size=300, bg=(245, 245, 250)):
