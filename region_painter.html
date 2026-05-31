@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Segoe UI', sans-serif;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+}
+
+:root {
+  --head:  #f97316;   /* orange  */
+  --torso: #3b82f6;   /* blue    */
+  --limb:  #22c55e;   /* green   */
+  --tuft:  #a855f7;   /* purple  */
+  --eraser: #e2e8f0;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: #13131e;
+  border-radius: 12px;
+  min-height: 100%;
+}
+
+/* ── Toolbar ── */
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tool-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #6b6b8a;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-right: 2px;
+}
+
+.brush-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: #1e1e2e;
+  color: #aaa;
+  transition: all 0.15s;
+}
+.brush-btn:hover { filter: brightness(1.15); }
+.brush-btn.active { color: #fff; }
+
+.brush-btn[data-region="head"]  { border-color: var(--head);  }
+.brush-btn[data-region="torso"] { border-color: var(--torso); }
+.brush-btn[data-region="limb"]  { border-color: var(--limb);  }
+.brush-btn[data-region="tuft"]  { border-color: var(--tuft);  }
+.brush-btn[data-region="erase"] { border-color: #444;         }
+
+.brush-btn.active[data-region="head"]  { background: var(--head);  }
+.brush-btn.active[data-region="torso"] { background: var(--torso); }
+.brush-btn.active[data-region="limb"]  { background: var(--limb);  }
+.brush-btn.active[data-region="tuft"]  { background: var(--tuft);  }
+.brush-btn.active[data-region="erase"] { background: #444;         }
+
+.dot {
+  width: 10px; height: 10px; border-radius: 2px;
+  flex-shrink: 0;
+}
+.dot-head  { background: var(--head);  }
+.dot-torso { background: var(--torso); }
+.dot-limb  { background: var(--limb);  }
+.dot-tuft  { background: var(--tuft);  }
+.dot-erase { background: #666; }
+
+/* ── Divider ── */
+.sep { width: 1px; height: 28px; background: #2a2a3d; flex-shrink: 0; }
+
+/* ── Size picker ── */
+#size-btns {
+  display: flex; gap: 4px; align-items: center;
+}
+.size-btn {
+  width: 28px; height: 28px; border-radius: 6px; border: 1.5px solid #3d3d5c;
+  background: #1e1e2e; color: #888; font-size: 11px; font-weight: 700;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: all 0.12s;
+}
+.size-btn.active, .size-btn:hover { border-color: #a78bfa; color: #a78bfa; background: #2a1a4e; }
+
+/* ── Icon buttons ── */
+.icon-btn {
+  width: 30px; height: 30px; border-radius: 7px; border: 1.5px solid #3d3d5c;
+  background: #1e1e2e; color: #888; font-size: 14px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.12s;
+}
+.icon-btn:hover { border-color: #a78bfa; color: #a78bfa; }
+.icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ── Canvas area ── */
+#canvas-wrap {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  background: #0d0d14;
+  border-radius: 10px;
+  border: 1px solid #2a2a3d;
+  padding: 10px;
+  overflow: hidden;
+}
+
+#sprite-canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  cursor: crosshair;
+  display: block;
+}
+
+#overlay-canvas {
+  position: absolute;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  cursor: crosshair;
+  pointer-events: none;  /* handled by sprite-canvas */
+}
+
+/* ── Legend ── */
+#legend {
+  display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
+  padding: 8px 10px; background: #1a1a28; border-radius: 8px;
+  border: 1px solid #2a2a3d;
+}
+.legend-item {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10px; font-weight: 600; color: #8b8ba0; letter-spacing: 0.05em;
+}
+.legend-swatch {
+  width: 14px; height: 14px; border-radius: 3px;
+}
+
+/* ── Status ── */
+#status-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 10px; color: #5a5a7a; letter-spacing: 0.04em;
+}
+#coverage-bar {
+  display: flex; gap: 4px; align-items: center;
+}
+.cov-seg {
+  height: 6px; border-radius: 3px; min-width: 4px; transition: width 0.2s;
+}
+
+#submit-btn {
+  padding: 8px 18px;
+  background: linear-gradient(135deg, #7c3aed, #a78bfa);
+  color: #fff; border: none; border-radius: 8px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+  cursor: pointer; box-shadow: 0 3px 12px #7c3aed44;
+  transition: opacity 0.15s, transform 0.1s;
+}
+#submit-btn:hover { opacity: 0.88; transform: translateY(-1px); }
+
+#auto-btn {
+  padding: 8px 14px;
+  background: #1e1e2e; border: 1.5px solid #3d3d5c;
+  color: #a78bfa; border-radius: 8px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+  cursor: pointer; transition: all 0.15s;
+}
+#auto-btn:hover { border-color: #a78bfa; background: #2a1a4e; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="toolbar">
+    <span class="tool-label">Paint</span>
+
+    <button class="brush-btn active" data-region="head"  onclick="setRegion('head')">
+      <span class="dot dot-head"></span> Head
+    </button>
+    <button class="brush-btn" data-region="torso" onclick="setRegion('torso')">
+      <span class="dot dot-torso"></span> Torso
+    </button>
+    <button class="brush-btn" data-region="limb"  onclick="setRegion('limb')">
+      <span class="dot dot-limb"></span> Limbs
+    </button>
+    <button class="brush-btn" data-region="tuft"  onclick="setRegion('tuft')">
+      <span class="dot dot-tuft"></span> Tuft
+    </button>
+    <button class="brush-btn" data-region="erase" onclick="setRegion('erase')">
+      <span class="dot dot-erase"></span> Erase
+    </button>
+
+    <div class="sep"></div>
+    <span class="tool-label">Size</span>
+    <div id="size-btns">
+      <button class="size-btn active" data-sz="1" onclick="setSize(1)">1</button>
+      <button class="size-btn" data-sz="2" onclick="setSize(2)">2</button>
+      <button class="size-btn" data-sz="3" onclick="setSize(3)">3</button>
+    </div>
+
+    <div class="sep"></div>
+    <button class="icon-btn" id="undo-btn" onclick="undo()" title="Undo">↩</button>
+    <button class="icon-btn" id="clear-btn" onclick="clearAll()" title="Clear all">✕</button>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="sprite-canvas"></canvas>
+    <canvas id="overlay-canvas"></canvas>
+  </div>
+
+  <div id="legend">
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--head)"></span>HEAD — max depth 14</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--torso)"></span>TORSO — depth 11</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--limb)"></span>LIMBS — depth 6</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--tuft)"></span>TUFT — depth 3</span>
+    <span class="legend-item" style="margin-left:auto; color: #4a4a6a;">Unpainted → auto-detect</span>
+  </div>
+
+  <div id="status-bar">
+    <div id="coverage-bar">
+      <span id="cov-text">painted: 0 px</span>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <button id="auto-btn" onclick="applyAutoDetect()">⟳ Auto-detect</button>
+      <button id="submit-btn" onclick="submitRegions()">Apply regions →</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Config injected by Python ─────────────────────────────────────────────────
+var SPRITE_SRC   = "__SPRITE_B64__";   // data:image/png;base64,...
+var AUTO_REGIONS = __AUTO_REGIONS__;   // 2-D array [H][W] of ints (0-3) or null
+var SPRITE_W     = __SPRITE_W__;       // pixel cols
+var SPRITE_H     = __SPRITE_H__;       // pixel rows
+
+// ── Region constants (mirror Python) ─────────────────────────────────────────
+var CODE = { head:0, torso:1, limb:2, tuft:3, erase:-1 };
+var COLOR = {
+  0: [249, 115,  22, 140],   // head  — orange
+  1: [ 59, 130, 246, 140],   // torso — blue
+  2: [ 34, 197,  94, 140],   // limb  — green
+  3: [168,  85, 247, 140],   // tuft  — purple
+};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+var CANVAS_SCALE = 8;   // each sprite pixel → NxN display pixels
+var regionMap    = new Int8Array(SPRITE_W * SPRITE_H).fill(-1);   // -1 = unset
+var history      = [];   // for undo: array of Int8Array snapshots
+
+var activeRegion = 'head';
+var brushSize    = 1;
+var painting     = false;
+
+// ── Canvas setup ──────────────────────────────────────────────────────────────
+var sc = document.getElementById('sprite-canvas');
+var oc = document.getElementById('overlay-canvas');
+sc.width  = oc.width  = SPRITE_W * CANVAS_SCALE;
+sc.height = oc.height = SPRITE_H * CANVAS_SCALE;
+
+// Position overlay exactly over sprite canvas
+function positionOverlay() {
+  var r = sc.getBoundingClientRect();
+  var p = sc.parentElement.getBoundingClientRect();
+  oc.style.left = (r.left - p.left) + 'px';
+  oc.style.top  = (r.top  - p.top)  + 'px';
+  oc.style.width  = r.width  + 'px';
+  oc.style.height = r.height + 'px';
+}
+
+var ctx  = sc.getContext('2d');
+var octx = oc.getContext('2d');
+
+// ── Draw sprite ───────────────────────────────────────────────────────────────
+var spriteImg = new Image();
+spriteImg.onload = function() {
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(spriteImg, 0, 0, SPRITE_W * CANVAS_SCALE, SPRITE_H * CANVAS_SCALE);
+  positionOverlay();
+
+  // Seed from auto-detect if available
+  if (AUTO_REGIONS) {
+    for (var y = 0; y < SPRITE_H; y++) {
+      for (var x = 0; x < SPRITE_W; x++) {
+        var v = AUTO_REGIONS[y][x];
+        if (v !== null && v >= 0) {
+          regionMap[y * SPRITE_W + x] = v;
+        }
+      }
+    }
+    drawOverlay();
+    updateStatus();
+  }
+};
+spriteImg.src = SPRITE_SRC;
+
+// ── Overlay rendering ─────────────────────────────────────────────────────────
+function drawOverlay() {
+  octx.clearRect(0, 0, oc.width, oc.height);
+  var S = CANVAS_SCALE;
+  for (var y = 0; y < SPRITE_H; y++) {
+    for (var x = 0; x < SPRITE_W; x++) {
+      var v = regionMap[y * SPRITE_W + x];
+      if (v < 0) continue;
+      var c = COLOR[v];
+      if (!c) continue;
+      octx.fillStyle = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + (c[3]/255) + ')';
+      octx.fillRect(x * S, y * S, S, S);
+    }
+  }
+  // Grid lines (faint)
+  octx.strokeStyle = 'rgba(0,0,0,0.08)';
+  octx.lineWidth = 0.5;
+  for (var gx = 0; gx <= SPRITE_W; gx++) {
+    octx.beginPath(); octx.moveTo(gx*S, 0); octx.lineTo(gx*S, SPRITE_H*S); octx.stroke();
+  }
+  for (var gy = 0; gy <= SPRITE_H; gy++) {
+    octx.beginPath(); octx.moveTo(0, gy*S); octx.lineTo(SPRITE_W*S, gy*S); octx.stroke();
+  }
+}
+
+// ── Painting logic ────────────────────────────────────────────────────────────
+function pixelAt(e) {
+  var r = sc.getBoundingClientRect();
+  var cx2 = e.clientX - r.left;
+  var cy2 = e.clientY - r.top;
+  var sx  = Math.floor(cx2 / r.width  * SPRITE_W);
+  var sy  = Math.floor(cy2 / r.height * SPRITE_H);
+  return [Math.max(0, Math.min(SPRITE_W-1, sx)),
+          Math.max(0, Math.min(SPRITE_H-1, sy))];
+}
+
+function paint(px, py) {
+  var code = (activeRegion === 'erase') ? -1 : CODE[activeRegion];
+  var half = Math.floor(brushSize / 2);
+  for (var dy = -half; dy <= half; dy++) {
+    for (var dx = -half; dx <= half; dx++) {
+      var nx = px + dx, ny = py + dy;
+      if (nx >= 0 && nx < SPRITE_W && ny >= 0 && ny < SPRITE_H) {
+        regionMap[ny * SPRITE_W + nx] = code;
+      }
+    }
+  }
+  drawOverlay();
+  updateStatus();
+}
+
+function snapshot() {
+  history.push(regionMap.slice());
+  if (history.length > 50) history.shift();
+  document.getElementById('undo-btn').disabled = false;
+}
+
+sc.addEventListener('mousedown', function(e) {
+  snapshot();
+  painting = true;
+  var p = pixelAt(e); paint(p[0], p[1]);
+});
+sc.addEventListener('mousemove', function(e) {
+  if (!painting) return;
+  var p = pixelAt(e); paint(p[0], p[1]);
+});
+window.addEventListener('mouseup', function() { painting = false; });
+
+// Touch support
+sc.addEventListener('touchstart', function(e) {
+  e.preventDefault();
+  snapshot();
+  painting = true;
+  var p = pixelAt(e.touches[0]); paint(p[0], p[1]);
+}, { passive: false });
+sc.addEventListener('touchmove', function(e) {
+  e.preventDefault();
+  var p = pixelAt(e.touches[0]); paint(p[0], p[1]);
+}, { passive: false });
+sc.addEventListener('touchend', function() { painting = false; });
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+function setRegion(r) {
+  activeRegion = r;
+  document.querySelectorAll('.brush-btn').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.region === r);
+  });
+}
+
+function setSize(s) {
+  brushSize = s;
+  document.querySelectorAll('.size-btn').forEach(function(b) {
+    b.classList.toggle('active', parseInt(b.dataset.sz) === s);
+  });
+}
+
+function undo() {
+  if (!history.length) return;
+  regionMap = history.pop();
+  drawOverlay();
+  updateStatus();
+  document.getElementById('undo-btn').disabled = history.length === 0;
+}
+
+function clearAll() {
+  snapshot();
+  regionMap.fill(-1);
+  drawOverlay();
+  updateStatus();
+}
+
+function applyAutoDetect() {
+  if (!AUTO_REGIONS) return;
+  snapshot();
+  for (var y = 0; y < SPRITE_H; y++) {
+    for (var x = 0; x < SPRITE_W; x++) {
+      var v = AUTO_REGIONS[y][x];
+      regionMap[y * SPRITE_W + x] = (v !== null && v >= 0) ? v : -1;
+    }
+  }
+  drawOverlay();
+  updateStatus();
+}
+
+// ── Status bar ────────────────────────────────────────────────────────────────
+function updateStatus() {
+  var counts = { 0:0, 1:0, 2:0, 3:0, '-1':0 };
+  var total  = 0;
+  for (var i = 0; i < regionMap.length; i++) {
+    var v = regionMap[i];
+    counts[v] = (counts[v] || 0) + 1;
+    total++;
+  }
+  var painted = total - (counts['-1'] || 0);
+  document.getElementById('cov-text').textContent =
+    'painted: ' + painted + ' / ' + total + ' px';
+}
+
+// ── Submit → Streamlit ────────────────────────────────────────────────────────
+function submitRegions() {
+  // Build 2-D array [H][W]
+  var grid = [];
+  for (var y = 0; y < SPRITE_H; y++) {
+    var row = [];
+    for (var x = 0; x < SPRITE_W; x++) {
+      row.push(regionMap[y * SPRITE_W + x]);
+    }
+    grid.push(row);
+  }
+  // Send to Streamlit via postMessage
+  window.parent.postMessage({
+    type: 'pixelcraft_regions',
+    data: grid,
+    w: SPRITE_W,
+    h: SPRITE_H,
+  }, '*');
+
+  // Visual feedback
+  var btn = document.getElementById('submit-btn');
+  btn.textContent = '✓ Applied!';
+  btn.style.background = 'linear-gradient(135deg, #059669, #34d399)';
+  setTimeout(function() {
+    btn.textContent = 'Apply regions →';
+    btn.style.background = '';
+  }, 2000);
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && e.key === 'z') { undo(); return; }
+  var map = { h:'head', t:'torso', l:'limb', u:'tuft', e:'erase' };
+  if (map[e.key]) setRegion(map[e.key]);
+  if (e.key === '1') setSize(1);
+  if (e.key === '2') setSize(2);
+  if (e.key === '3') setSize(3);
+});
+
+window.addEventListener('resize', positionOverlay);
+document.getElementById('undo-btn').disabled = true;
+updateStatus();
+</script>
+</body>
+</html>
