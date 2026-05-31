@@ -61,6 +61,105 @@ def prepare_front_face(sprite, size):
     return face
 
 
+def prepare_back_face(sprite, size):
+    """
+    Generate a back-of-head face that:
+      - Has the EXACT same silhouette / outline as the front face
+      - Has NO facial features (eyes, nose, mouth, details) in the interior
+      - Fills each interior pixel with the dominant bright color from that
+        pixel's row, giving natural color bands (hair on top, shirt below)
+        without any dark feature pixels bleeding through
+
+    Approach:
+      1. Render the front face at the target size (exact silhouette + outline).
+      2. Build a per-row flat fill color from the original sprite (bright pixels
+         only, ignoring dark line art and features).
+      3. Re-draw the face: for every pixel that belongs to the character
+         (non-background in the front render), replace its color with the
+         flat row color — preserving the outline ring with the outline's own
+         blended color so the edge still reads as a clean silhouette.
+      4. Mirror horizontally so left/right reads correctly as a back view.
+    """
+    import numpy as np
+    from voxelizer import DARK_THRESHOLD, _bg_mask, _resize
+
+    # ── Step 1: build the front face at target size (gives us the silhouette) ──
+    front = prepare_front_face(sprite, size)
+    front_arr = np.array(front, dtype=np.uint8)          # (size, size, 3)
+    bg_rgb = get_bg_color(sprite)
+
+    # Background mask on the rendered front face (within 30 of bg color)
+    diff = np.abs(front_arr.astype(np.int32) - np.array(bg_rgb, dtype=np.int32))
+    is_bg_px = diff.max(axis=2) < 30                     # True = background
+
+    # ── Step 2: per-row dominant bright color from the LOW-RES sprite ─────────
+    small  = _resize(sprite.convert("RGBA"))
+    rgba_s = np.array(small, dtype=np.uint8)
+    is_bg_s = _bg_mask(rgba_s)
+    occ_s   = ~is_bg_s
+    cols_s  = rgba_s[:, :, :3]
+    H_s, W_s = occ_s.shape
+
+    row_colors = []
+    for y in range(H_s):
+        row_occ = occ_s[y, :]
+        if not row_occ.any():
+            row_colors.append(None)
+            continue
+        row_cols = cols_s[y, row_occ]
+        # Only use bright pixels — skip dark outline / feature pixels
+        bright = row_cols[row_cols.max(axis=1) >= DARK_THRESHOLD]
+        if len(bright) == 0:
+            row_colors.append(None)
+        else:
+            row_colors.append(tuple(int(v) for v in np.median(bright, axis=0)))
+
+    # Fill None rows from nearest non-None neighbor (forward then backward pass)
+    last = bg_rgb
+    for i in range(len(row_colors)):
+        if row_colors[i] is None:
+            row_colors[i] = last
+        else:
+            last = row_colors[i]
+    last = bg_rgb
+    for i in range(len(row_colors) - 1, -1, -1):
+        if row_colors[i] == bg_rgb and last != bg_rgb:
+            row_colors[i] = last
+        else:
+            last = row_colors[i]
+
+    # ── Step 3: map low-res row colors onto the full-size face ────────────────
+    # Each pixel row in the output maps back to a row in the low-res sprite.
+    # We use the same centering logic as prepare_front_face (thumbnail keeps
+    # aspect ratio; sprite is centered in the square canvas).
+    s_small = small  # already resized PIL image
+    disp_w  = int(s_small.width  * min(size / s_small.width, size / s_small.height))
+    disp_h  = int(s_small.height * min(size / s_small.width, size / s_small.height))
+    ox_px   = (size - disp_w) // 2
+    oy_px   = (size - disp_h) // 2
+
+    # Build the back face array: start from bg, paint character pixels
+    back_arr = np.full((size, size, 3), bg_rgb, dtype=np.uint8)
+
+    for py in range(size):
+        # Which low-res sprite row does this output row correspond to?
+        if py < oy_px or py >= oy_px + disp_h:
+            continue  # pure background row
+        sprite_row_f = (py - oy_px) / disp_h * H_s
+        sprite_row   = min(int(sprite_row_f), H_s - 1)
+        fill_color   = np.array(row_colors[sprite_row], dtype=np.uint8)
+
+        for px in range(size):
+            if is_bg_px[py, px]:
+                continue  # leave as background
+            back_arr[py, px] = fill_color
+
+    # ── Step 4: mirror horizontally (back of head = left/right flipped) ───────
+    back_arr = back_arr[:, ::-1, :]
+
+    return Image.fromarray(back_arr, "RGB")
+
+
 # ── Net layout ────────────────────────────────────────────────────────────────
 NET_LAYOUT = {
     "top":    (1, 0),
@@ -78,19 +177,16 @@ def _resolve_faces(sprite, size, side_style, use_3d_renders=True):
         grid  = smooth_grid(grid)
         bg    = get_bg_color(sprite)
         faces = render_all_faces(grid, face_size=size, bg=bg)
-        # Override front/back with original sprite so black line art is preserved
-        # on those faces. Side/top/bottom come from the de-outlined voxel model.
         faces["front"] = prepare_front_face(sprite, size)
-        faces["back"]  = prepare_front_face(
-            sprite.transpose(Image.FLIP_LEFT_RIGHT), size)
+        faces["back"]  = prepare_back_face(sprite, size)
         return faces
     return {
         "front":  prepare_front_face(sprite, size),
+        "back":   prepare_back_face(sprite, size),
         "top":    _make_side(size, side_style, sprite),
         "bottom": _make_side(size, side_style, sprite),
         "left":   _make_side(size, side_style, sprite),
         "right":  _make_side(size, side_style, sprite),
-        "back":   _make_side(size, side_style, sprite),
     }
 
 

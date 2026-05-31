@@ -8,15 +8,19 @@ Design philosophy (chibi / Lego-style sculpt)
   contribute structural depth data of their own.
 • Depth contrast is deliberately low.  The face is a smooth rounded mass,
   not a cratered landscape.  Facial features sit ON the surface.
-• Region depths are shallow and close together (HEAD=7, TORSO=7, LIMB=4).
-  Chibi / Lego proportions mean the head is as massive as the torso.
+• Region depths differ meaningfully (HEAD=14, TORSO=11, LIMB=6) so each
+  body segment is visually distinct on the side view — head pops out most,
+  torso is a clearly shallower block, limbs are thin.
 • Elliptical profile minimum is 55 % so the silhouette reads as a rounded
-  cylinder, not a pointed cone.
-• Gaussian smoothing (sigma 1.2, 2 passes) blurs all remaining depth
-  transitions into gentle slopes.
-• Color blending (dark → nearest interior) is applied ONLY when exporting
-  the Three.js JSON, so the papercraft PDF front face retains correct
-  black line art while the 3-D viewer never shows black shells.
+  cylinder with real edge depth, not a pointed cone.  This prevents edge
+  pixels (including eyes near the silhouette) from popping out relative
+  to their neighbours.
+• Region boundaries use NO seam scaling — the depth step between regions
+  is enough to read the segments without cutting grooves that slice through
+  features at the head/torso boundary.
+• Color blending (dark → nearest interior) is applied BROADLY before
+  voxel colors are stored, so ALL views (side, top, bottom) show bright
+  surface colors — no black shells anywhere.
 """
 
 from __future__ import annotations
@@ -32,16 +36,19 @@ REGION_TORSO = 1
 REGION_LIMB  = 2
 REGION_TUFT  = 3   # narrow top protrusion: feathers, hair tufts, antennae
 
-# Chibi proportions: head ≈ torso mass, limbs thin, tufts shallow
+# Each region has a meaningfully different depth so segments read as distinct
+# blocks on the side view, while still looking like one cohesive character.
 REGION_MAX_DEPTH: dict[int, int] = {
-    REGION_HEAD:  16,
-    REGION_TORSO: 14,
-    REGION_LIMB:  8,
-    REGION_TUFT:  5,   # thin protruding accent — minimal depth
+    REGION_HEAD:  14,   # prominent — biggest block
+    REGION_TORSO: 11,   # clearly shallower than head → visible step at neck
+    REGION_LIMB:   6,   # thin cylinders
+    REGION_TUFT:   3,   # barely any depth — narrow accent
 }
-MAX_DEPTH      = 16   # deeper extrusion — side profile has real sculptural mass
-DARK_THRESHOLD = 55   # max(r,g,b) below this → treat as line art, not structure
-MIN_PROFILE    = 0.62 # ellipse floor — thick rounded cylinder, not a cone
+MAX_DEPTH      = 14    # absolute cap (matches head max)
+DARK_THRESHOLD = 55    # max(r,g,b) below this → line art (depth + contour detection)
+MIN_PROFILE    = 0.55  # ellipse floor — 55% at edge gives smooth rounded cylinder
+                       # without making edge pixels (eyes, ears) pop out unevenly
+                       # (v4 used 0.30 which caused the half-eye protrusion bug)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,50 +88,51 @@ def preprocess(sprite: Image.Image):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def classify_regions(occupied: np.ndarray) -> np.ndarray:
-    H, W        = occupied.shape
-    region_map  = np.full((H, W), REGION_LIMB, dtype=np.int8)
-    row_counts  = occupied.sum(axis=1)
-    max_count   = max(int(row_counts.max()), 1)
-    is_seam     = row_counts <= max(1, max_count * 0.15)
+    """
+    Assign each pixel to HEAD, TORSO, LIMB, or TUFT based on vertical position
+    within the character's bounding box.
 
-    segments = []
-    i = 0
-    while i < H:
-        if not is_seam[i]:
-            j = i
-            while j < H and not is_seam[j]:
-                j += 1
-            segments.append((i, j, float(row_counts[i:j].mean())))
-            i = j
-        else:
-            i += 1
+    Position-based heuristic (more reliable than seam detection for chibi sprites
+    where head and torso are often connected with no gap):
+      • Top narrow rows (width < 40% of max) → TUFT (hat brim, antenna, hair tuft)
+      • Remaining span split: top 42% → HEAD, next 36% → TORSO, bottom 22% → LIMB
 
-    if not segments:
+    This gives the expected chibi shape regardless of whether the sprite has
+    explicit seam rows between body sections.
+    """
+    H, W       = occupied.shape
+    region_map = np.full((H, W), REGION_LIMB, dtype=np.int8)
+    row_counts = occupied.sum(axis=1).astype(float)
+    max_w      = max(float(row_counts.max()), 1.0)
+
+    occ_rows = np.where(row_counts > 0)[0]
+    if len(occ_rows) == 0:
         return region_map
+    y_top, y_bot = int(occ_rows[0]), int(occ_rows[-1])
 
-    widest = max(s[2] for s in segments)
-    for k, (start, end, mean_w) in enumerate(segments):
-        if   mean_w >= widest * 0.75: code = REGION_TORSO
-        elif k == 0:                  code = REGION_HEAD
-        else:                         code = REGION_LIMB
-        region_map[start:end, :] = code
+    # Mark narrow top protrusions as TUFT
+    y_head_start = y_top
+    for y in range(y_top, H):
+        if row_counts[y] < max_w * 0.40:
+            region_map[y, :] = REGION_TUFT
+            y_head_start = y + 1
+        else:
+            break
 
-    first = segments[0]
-    if first[2] >= widest * 0.75:
-        he = first[0] + max(1, (first[1] - first[0]) // 4)
-        region_map[first[0]:he, :] = REGION_HEAD
+    # Split remaining body span into HEAD / TORSO / LIMB by position
+    body_span = max(1, y_bot - y_head_start + 1)
+    head_end  = y_head_start + int(body_span * 0.42)
+    torso_end = y_head_start + int(body_span * 0.78)
 
-    # Detect narrow top protrusions (tufts, feathers, antennae).
-    # Row-level detection: walk from the first occupied row downward and mark
-    # any row narrower than 40 % of max-width as TUFT.  This works even when
-    # the tuft is part of the same continuous segment as the head (no seam).
-    first_occ = next((y for y in range(H) if row_counts[y] > 0), None)
-    if first_occ is not None:
-        for y in range(first_occ, H):
-            if row_counts[y] < widest * 0.40:
-                region_map[y, :] = REGION_TUFT
-            else:
-                break  # stop as soon as the body widens past threshold
+    for y in range(y_head_start, y_bot + 1):
+        if row_counts[y] == 0:
+            continue
+        if y < head_end:
+            region_map[y, :] = REGION_HEAD
+        elif y < torso_end:
+            region_map[y, :] = REGION_TORSO
+        else:
+            region_map[y, :] = REGION_LIMB
 
     return region_map
 
@@ -134,6 +142,7 @@ def classify_regions(occupied: np.ndarray) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def detect_outlines(occupied: np.ndarray) -> np.ndarray:
+    """Pixels that touch the background (or the image edge) in 4-connectivity."""
     H, W       = occupied.shape
     is_outline = np.zeros((H, W), dtype=bool)
     padded     = np.pad(occupied, 1, constant_values=False)
@@ -149,65 +158,105 @@ def detect_dark_pixels(colors: np.ndarray, occupied: np.ndarray) -> np.ndarray:
     return occupied & (brightness.astype(np.int32) < DARK_THRESHOLD)
 
 
+def _detect_contour_darks(colors: np.ndarray, occupied: np.ndarray) -> np.ndarray:
+    """
+    Identify dark pixels that are LINE ART CONTOURS vs intentional FEATURES.
+
+    CONTOUR (replace color → blend toward skin):
+      • Any dark component that touches the background  — silhouette outline
+      • Any dark component whose bounding box is only 1px thick in either
+        dimension — interior border stripes (belt, collar, region dividers)
+
+    FEATURE (leave completely alone — full color, full depth):
+      • Dark clusters that don't touch the background AND are ≥2px thick in
+        both bbox dimensions — eyes, pupils, nose, spots, freckles
+    """
+    try:
+        from scipy.ndimage import label, binary_dilation
+    except ImportError:
+        is_dark    = detect_dark_pixels(colors, occupied)
+        silhouette = detect_outlines(occupied)
+        return is_dark & silhouette
+
+    brightness = colors[:, :, :3].max(axis=2).astype(np.int32)
+    is_dark    = occupied & (brightness < DARK_THRESHOLD)
+
+    if not is_dark.any():
+        return is_dark
+
+    struct8         = np.ones((3, 3), dtype=bool)
+    labeled, n_comp = label(is_dark, structure=struct8)
+    bg_dilated      = binary_dilation(~occupied, structure=struct8)
+
+    contour_mask = np.zeros_like(is_dark)
+    for cid in range(1, n_comp + 1):
+        comp = labeled == cid
+        if (comp & bg_dilated).any():
+            contour_mask |= comp
+            continue
+        ys, xs  = np.where(comp)
+        min_dim = min(ys.max() - ys.min() + 1, xs.max() - xs.min() + 1)
+        if min_dim < 2:
+            contour_mask |= comp
+
+    return contour_mask
+
+
+def _blend_pixels(colors: np.ndarray, occupied: np.ndarray,
+                  mask: np.ndarray, blend: float = 0.90) -> np.ndarray:
+    """
+    For each pixel in mask, replace its color with a blend toward the nearest
+    bright (non-dark) occupied pixel.  blend=0.90 → 90% nearest-bright + 10% original.
+    """
+    try:
+        from scipy.ndimage import distance_transform_edt
+        brightness = colors[:, :, :3].max(axis=2).astype(np.int32)
+        is_bright  = occupied & (brightness >= DARK_THRESHOLD)
+
+        if not is_bright.any() or not mask.any():
+            return colors
+
+        _, nearest = distance_transform_edt(~is_bright, return_indices=True)
+        result     = colors.copy()
+        ys, xs     = np.where(mask & occupied)
+        for y, x in zip(ys, xs):
+            ny, nx = int(nearest[0][y, x]), int(nearest[1][y, x])
+            near_c = colors[ny, nx].astype(float)
+            orig_c = colors[y,  x].astype(float)
+            result[y, x] = np.clip(
+                near_c * blend + orig_c * (1.0 - blend),
+                0, 255
+            ).astype(np.uint8)
+        return result
+    except ImportError:
+        return colors
+
 
 def deoutline_sprite(sprite: Image.Image) -> Image.Image:
     """
-    Replace dark outline pixels with the color of their nearest bright interior
-    pixel before voxelization.  The voxelizer never sees outline pixels as
-    structure, which eliminates black shells, simplifies depth inheritance,
-    and fixes black-row side renders at the source.
-
-    The original sprite is kept intact for the PDF front/back faces.
+    Replace CONTOUR dark pixels with a blend toward their nearest bright neighbor,
+    while leaving ISOLATED dark clusters (eyes, nose, freckles, spots) completely
+    untouched at their original color and depth.
     """
     rgba     = np.array(sprite.convert("RGBA"), dtype=np.uint8)
     is_bg    = _bg_mask(rgba)
     occupied = ~is_bg
     colors   = rgba[:, :, :3].copy()
 
-    # Only replace pixels that are TOUCHING the background (4-connectivity).
-    # Interior dark pixels like eyes are never adjacent to background so they
-    # are left completely untouched — no more washed-out eyes.
-    is_outline = detect_outlines(occupied)          # True only at silhouette edge
-    interior   = occupied & ~is_outline
+    contour_mask = _detect_contour_darks(colors, occupied)
 
-    if not interior.any() or not is_outline.any():
-        return sprite   # nothing to do
-
-    try:
-        from scipy.ndimage import distance_transform_edt
-        _, nearest = distance_transform_edt(~interior, return_indices=True)
-        result = rgba.copy()
-        ys, xs = np.where(is_outline)
-        for y, x in zip(ys, xs):
-            ny, nx    = int(nearest[0][y, x]), int(nearest[1][y, x])
-            new_color = colors[ny, nx]
-            # If nearest interior pixel is also dark, walk further until bright
-            if new_color.max() < DARK_THRESHOLD:
-                H2, W2 = colors.shape[:2]
-                for radius in range(2, 8):
-                    found = False
-                    for dy in range(-radius, radius+1):
-                        for dx in range(-radius, radius+1):
-                            ny2, nx2 = y+dy, x+dx
-                            if (0 <= ny2 < H2 and 0 <= nx2 < W2
-                                    and interior[ny2, nx2]
-                                    and colors[ny2, nx2].max() >= DARK_THRESHOLD):
-                                new_color = colors[ny2, nx2]
-                                found = True
-                                break
-                        if found:
-                            break
-                    if found:
-                        break
-            result[y, x, :3] = new_color
-            result[y, x,  3] = rgba[y, x, 3]
-        return Image.fromarray(result, "RGBA")
-    except ImportError:
+    if not contour_mask.any():
         return sprite
+
+    colors = _blend_pixels(colors, occupied, contour_mask, blend=0.90)
+
+    result = rgba.copy()
+    result[:, :, :3] = colors
+    return Image.fromarray(result, "RGBA")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 4 — Depth map  (interior only → propagate to dark/outline → smooth)
+# Step 4 — Depth map
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_depth_map(
@@ -221,19 +270,20 @@ def compute_depth_map(
     Two-phase depth assignment
     ──────────────────────────
     Phase A  Interior (bright) pixels get depth from region + elliptical profile.
-             Profile minimum = MIN_PROFILE (55 %) so sides are a smooth cylinder.
+             MIN_PROFILE = 0.55 so edges are 55% of max depth — rounded cylinder
+             shape without the edge-popping artefact that 0.30 caused.
+             No seam scaling is applied at region boundaries: the depth step
+             between REGION_MAX_DEPTH values (14 → 11 → 6) is sufficient to
+             read each segment as a distinct block without cutting grooves
+             through features that sit near a boundary row.
 
     Phase B  Dark / outline pixels inherit the depth of their nearest interior
-             neighbour via distance transform.  They carry zero structural
-             weight of their own — pure surface decoration.
-
-    After both phases a Gaussian blur (sigma 1.2, 2 passes) smooths all
-    remaining transitions so the face reads as one cohesive rounded mass.
+             neighbour via distance transform.
     """
     H, W      = occupied.shape
     depth_map = np.zeros((H, W), dtype=np.float32)
-    is_art    = (is_outline | is_dark) & occupied   # line-art mask
-    interior  = occupied & ~is_art                   # structural pixels
+    is_art    = (is_outline | is_dark) & occupied
+    interior  = occupied & ~is_art
 
     # ── Phase A: structural pixels ────────────────────────────────────────────
     for y in range(H):
@@ -248,8 +298,9 @@ def compute_depth_map(
             region = int(region_map[y, x])
             max_d  = float(REGION_MAX_DEPTH.get(region, 5))
             t      = max(-1.0, min(1.0, (x - x_center) / half_w))
-            # sqrt gives rounded cylinder; floor at MIN_PROFILE for stable sides
             profile         = math.sqrt(max(0.0, 1.0 - t * t))
+            # Floor at MIN_PROFILE (0.55) so edge pixels stay thick and smooth.
+            # No seam_mult — boundaries are readable from depth differences alone.
             depth_map[y, x] = max(max_d * MIN_PROFILE,
                                   min(profile * max_d, float(MAX_DEPTH)))
 
@@ -257,14 +308,12 @@ def compute_depth_map(
     try:
         from scipy.ndimage import distance_transform_edt
         if interior.any():
-            # For every art pixel, find the nearest interior pixel and copy depth
             _, nearest = distance_transform_edt(~interior, return_indices=True)
             art_ys, art_xs = np.where(is_art)
             for y, x in zip(art_ys, art_xs):
                 ny, nx          = int(nearest[0][y, x]), int(nearest[1][y, x])
                 depth_map[y, x] = depth_map[ny, nx]
     except ImportError:
-        # Fallback: use row-maximum of interior depth
         for y in range(H):
             row_int = np.where(interior[y, :])[0]
             if len(row_int) == 0:
@@ -272,9 +321,6 @@ def compute_depth_map(
             row_max = float(depth_map[y, row_int].max())
             for x in np.where(is_art[y, :])[0]:
                 depth_map[y, x] = row_max
-
-    # Smoothing is handled by smooth_grid after build() — not here.
-    # Doing it twice over-smooths the depth and loses region boundaries.
 
     return np.round(depth_map).astype(np.int32)
 
@@ -313,20 +359,17 @@ def apply_symmetry(
 class VoxelGrid:
     def __init__(self, H: int, W: int, D: int):
         self.H, self.W, self.D = H, W, D
-        self.occupied   = np.zeros((H, W, D), dtype=bool)
-        self.colors     = np.zeros((H, W, D, 3), dtype=np.uint8)
-        self.region_map = np.zeros((H, W), dtype=np.int8)
+        self.occupied      = np.zeros((H, W, D), dtype=bool)
+        self.colors        = np.zeros((H, W, D, 3), dtype=np.uint8)
+        self.viewer_colors = np.zeros((H, W, D, 3), dtype=np.uint8)
+        self.region_map    = np.zeros((H, W), dtype=np.int8)
 
     @classmethod
     def build(cls, sprite: Image.Image) -> "VoxelGrid":
-        # Resize to voxel scale FIRST, then deoutline.
-        # If deoutline runs on the full-size image and preprocess resizes after,
-        # nearest-neighbor resampling reintroduces dark border pixels — confirmed
-        # to leave 183/183 outline pixels still dark in testing.
-        # Resizing first then deoutlining drops that to ~128 (character edge
-        # features that legitimately border bg — acceptable).
+        # Resize first, then deoutline so resampling doesn't reintroduce darks.
         sprite_small = _resize(sprite.convert("RGBA"))
         sprite_vox   = deoutline_sprite(sprite_small)
+
         rgba, occupied, colors = preprocess(sprite_vox)
         H, W = occupied.shape
 
@@ -334,8 +377,6 @@ class VoxelGrid:
         is_outline = detect_outlines(occupied)
         is_dark    = detect_dark_pixels(colors, occupied)
 
-        # Colors stored as-is (original line art preserved for PDF front face).
-        # Color blending for the 3-D viewer is applied later in export_grid_json.
         depth_map = compute_depth_map(occupied, colors, region_map, is_outline, is_dark)
         depth_map = apply_symmetry(depth_map, occupied, region_map)
 
@@ -343,15 +384,13 @@ class VoxelGrid:
         grid = cls(H, W, D)
         grid.region_map = region_map
 
-        # All pixels use bilateral centering — since dark/outline pixels now
-        # have depths matching their neighbours, there are no cliff edges and
-        # therefore no protrusions or hollows at the surface.
         ys, xs = np.where(occupied)
         for y, x in zip(ys, xs):
             d       = min(int(depth_map[y, x]), D)
             z_start = (D - d) // 2
-            grid.occupied[y, x, z_start : z_start + d] = True
-            grid.colors[y, x, z_start : z_start + d]   = colors[y, x]
+            grid.occupied[y, x, z_start : z_start + d]        = True
+            grid.colors[y, x, z_start : z_start + d]          = colors[y, x]
+            grid.viewer_colors[y, x, z_start : z_start + d]   = colors[y, x]
 
         return grid
 
@@ -395,8 +434,8 @@ def _render_front_back(occ, col, shade, reverse_z, flip_x, face_size, bg):
         occ = occ[:, :, ::-1]
         col = col[:, :, ::-1, :]
 
-    any_hit = occ.any(axis=2)           # (H, W)
-    first_z = np.argmax(occ, axis=2)    # (H, W)
+    any_hit = occ.any(axis=2)
+    first_z = np.argmax(occ, axis=2)
 
     result  = np.full((H, W, 3), bg, dtype=np.float32)
     ys, xs  = np.where(any_hit)
@@ -411,32 +450,28 @@ def _render_front_back(occ, col, shade, reverse_z, flip_x, face_size, bg):
 def _render_side(grid, is_left, shade, face_size, bg):
     """
     True orthographic ray-cast in the X direction.
-    Output: H (rows=Y) × D (cols=Z depth).
-    Each pixel = actual color of the first voxel hit along the ray.
-    No smearing, no representative colors — preserves full sprite structure.
+    Uses viewer_colors (deoutlined, no black) for clean side renders.
+    With MIN_PROFILE=0.55, each region has real edge depth so the side
+    view shows distinct rounded blocks for head/torso/limbs.
     """
-    occ = grid.occupied   # (H, W, D)
-    col = grid.colors     # (H, W, D, 3)
+    occ = grid.occupied
+    col = grid.viewer_colors
     H, W, D = occ.shape
 
-    # Reorder X so index 0 is the side we're looking from
     x_order     = np.arange(W - 1, -1, -1) if not is_left else np.arange(W)
-    occ_ordered = occ[:, x_order, :]       # (H, W, D)
-    col_ordered = col[:, x_order, :, :]    # (H, W, D, 3)
+    occ_ordered = occ[:, x_order, :]
+    col_ordered = col[:, x_order, :, :]
 
-    # For each (Y, Z) find the index of the first occupied X
-    any_hit = occ_ordered.any(axis=1)      # (H, D)
-    first_x = np.argmax(occ_ordered, axis=1)  # (H, D)
+    any_hit = occ_ordered.any(axis=1)
+    first_x = np.argmax(occ_ordered, axis=1)
 
     result = np.full((H, D, 3), bg, dtype=np.float32)
     ys, zs = np.where(any_hit)
     result[ys, zs] = col_ordered[ys, first_x[ys, zs], zs].astype(np.float32)
 
-    # Subtle depth shading: far edge slightly darker
     t       = np.linspace(0, 1, D)
     result *= shade * (1.0 - 0.22 * t)[None, :, None]
 
-    # Right view: flip Z so the front of the model is on the left edge
     if not is_left:
         result = result[:, ::-1, :]
 
@@ -446,20 +481,18 @@ def _render_side(grid, is_left, shade, face_size, bg):
 def _render_top_bottom(grid, is_top, shade, face_size, bg):
     """
     True orthographic ray-cast in the Y direction.
-    Output: D (rows=Z depth) × W (cols=X).
-    Each pixel = actual color of the first voxel hit along the ray.
+    Uses viewer_colors (deoutlined, no black) for clean top/bottom renders.
     """
-    occ = grid.occupied   # (H, W, D)
-    col = grid.colors     # (H, W, D, 3)
+    occ = grid.occupied
+    col = grid.viewer_colors
     H, W, D = occ.shape
 
     y_order     = np.arange(H) if is_top else np.arange(H - 1, -1, -1)
-    occ_ordered = occ[y_order, :, :]       # (H, W, D)
-    col_ordered = col[y_order, :, :, :]    # (H, W, D, 3)
+    occ_ordered = occ[y_order, :, :]
+    col_ordered = col[y_order, :, :, :]
 
-    # For each (X, Z) find the index of the first occupied Y
-    any_hit = occ_ordered.any(axis=0)      # (W, D)
-    first_y = np.argmax(occ_ordered, axis=0)  # (W, D)
+    any_hit = occ_ordered.any(axis=0)
+    first_y = np.argmax(occ_ordered, axis=0)
 
     result = np.full((D, W, 3), bg, dtype=np.float32)
     xs, zs = np.where(any_hit)
@@ -476,7 +509,7 @@ def _render_top_bottom(grid, is_top, shade, face_size, bg):
 
 def render_all_faces(grid, face_size=300, bg=(245, 245, 250)):
     occ = grid.occupied
-    col = grid.colors
+    col = grid.viewer_colors
     return {
         "front":  _render_front_back(occ, col, 1.00, False, False, face_size, bg),
         "back":   _render_front_back(occ, col, 0.60, True,  True,  face_size, bg),
@@ -495,47 +528,39 @@ def get_depth_map(grid: VoxelGrid) -> np.ndarray:
     return grid.occupied.sum(axis=2).astype(np.int32)
 
 
-def smooth_grid(grid: VoxelGrid, strength: float = 0.55, passes: int = 3) -> VoxelGrid:
+def smooth_grid(grid: VoxelGrid, passes: int = 2) -> VoxelGrid:
     """
-    Post-build Gaussian smoothing pass on the depth map.
-    The gaussian_filter in compute_depth_map already does the heavy lifting;
-    this adds a final light pass to blend any seam-region boundaries.
+    Region-aware smoothing: blurs depth within each region for organic roundness,
+    but does NOT blur across region boundaries so the head/torso/limb depth steps
+    remain sharp and readable.
     """
     H, W  = grid.H, grid.W
     depth = get_depth_map(grid).astype(np.float32)
+    rmap  = grid.region_map
 
-    try:
-        from scipy.ndimage import gaussian_filter
-        for _ in range(passes):
-            blurred = gaussian_filter(depth, sigma=0.6)
-            depth   = np.where(depth > 0,
-                               np.clip(blurred, 1.0, float(MAX_DEPTH)),
-                               0.0)
-        depth = np.round(depth).astype(np.int32)
-    except ImportError:
-        # Manual 3×3 fallback
-        kern = np.array([[1,2,1],[2,4,2],[1,2,1]], dtype=np.float32)
-        for _ in range(passes):
-            nxt = depth.copy()
-            for y in range(H):
-                for x in range(W):
-                    if depth[y, x] == 0:
-                        continue
-                    ws = wt = 0.0
-                    for ky in range(-1, 2):
-                        for kx in range(-1, 2):
-                            ny, nx = y+ky, x+kx
-                            if 0 <= ny < H and 0 <= nx < W and depth[ny, nx] > 0:
+    kern = np.array([[1,2,1],[2,4,2],[1,2,1]], dtype=np.float32)
+
+    for _ in range(passes):
+        nxt = depth.copy()
+        for y in range(H):
+            for x in range(W):
+                if depth[y, x] == 0:
+                    continue
+                ws = wt = 0.0
+                for ky in range(-1, 2):
+                    for kx in range(-1, 2):
+                        ny, nx2 = y + ky, x + kx
+                        if 0 <= ny < H and 0 <= nx2 < W and depth[ny, nx2] > 0:
+                            if rmap[ny, nx2] == rmap[y, x]:
                                 w   = float(kern[ky+1, kx+1])
-                                rw  = 1.0 if grid.region_map[ny,nx]==grid.region_map[y,x] else 0.35
-                                ws += depth[ny, nx] * w * rw
-                                wt += w * rw
-                    if wt > 0:
-                        sv = ws / wt
-                        nxt[y,x] = max(1, min(MAX_DEPTH,
-                                       round(depth[y,x]*(1-strength)+sv*strength)))
-            depth = nxt
+                                ws += depth[ny, nx2] * w
+                                wt += w
+                if wt > 0:
+                    nxt[y, x] = max(1.0, min(float(MAX_DEPTH),
+                                             depth[y, x] * 0.4 + (ws / wt) * 0.6))
+        depth = nxt
 
+    depth = np.round(depth).astype(np.int32)
     new_D    = min(int(depth.max()), MAX_DEPTH) if depth.max() > 0 else 1
     new_grid = VoxelGrid(H, W, new_D)
     new_grid.region_map = grid.region_map.copy()
@@ -544,71 +569,36 @@ def smooth_grid(grid: VoxelGrid, strength: float = 0.55, passes: int = 3) -> Vox
         d          = min(int(depth[y, x]), new_D)
         old_d      = int(grid.occupied[y, x, :].sum())
         old_zstart = (grid.D - old_d) // 2 if old_d > 0 else 0
-        src = (grid.colors[y, x, old_zstart]
-               if old_d > 0 and old_zstart < grid.D
-               else np.array([180,140,80], dtype=np.uint8))
+        src_col  = (grid.colors[y, x, old_zstart]
+                    if old_d > 0 and old_zstart < grid.D
+                    else np.array([180,140,80], dtype=np.uint8))
+        src_vcol = (grid.viewer_colors[y, x, old_zstart]
+                    if old_d > 0 and old_zstart < grid.D
+                    else np.array([180,140,80], dtype=np.uint8))
         z_start = (new_D - d) // 2
-        new_grid.occupied[y, x, z_start:z_start+d] = True
-        new_grid.colors[y, x, z_start:z_start+d]   = src
+        new_grid.occupied[y, x, z_start:z_start+d]      = True
+        new_grid.colors[y, x, z_start:z_start+d]        = src_col
+        new_grid.viewer_colors[y, x, z_start:z_start+d] = src_vcol
     return new_grid
-
-
-def _blend_for_viewer(colors: np.ndarray, occupied: np.ndarray,
-                      is_dark: np.ndarray, blend: float = 0.78) -> np.ndarray:
-    """
-    Blend dark pixel colors toward nearest interior pixel — for viewer only.
-    Original colors in the grid are untouched so the PDF front face keeps
-    correct black line art.
-    """
-    try:
-        from scipy.ndimage import distance_transform_edt
-        interior = occupied & ~is_dark
-        if not interior.any():
-            return colors
-        _, nearest = distance_transform_edt(~interior, return_indices=True)
-        result     = colors.copy()
-        ys, xs     = np.where(is_dark & occupied)
-        for y, x in zip(ys, xs):
-            ny, nx       = int(nearest[0][y, x]), int(nearest[1][y, x])
-            result[y, x] = np.clip(
-                colors[ny, nx].astype(float) * blend +
-                colors[y,  x].astype(float) * (1.0 - blend),
-                0, 255
-            ).astype(np.uint8)
-        return result
-    except ImportError:
-        return colors
 
 
 def export_grid_json(grid: VoxelGrid) -> dict:
     """
-    Serialise to JSON for Three.js.  Color blending (dark → interior) is
-    applied here only — the grid itself retains original sprite colors.
+    Serialise to JSON for Three.js.
+    Uses viewer_colors (deoutlined, all bright) so the Three.js viewer
+    never renders black voxels.
     """
     H, W   = grid.H, grid.W
     depth  = get_depth_map(grid)
-
-    # Build front-color array from first occupied z-slice per pixel
-    front_colors = np.zeros((H, W, 3), dtype=np.uint8)
-    front_occ    = (depth > 0)
-    for y in range(H):
-        for x in range(W):
-            if depth[y, x] > 0:
-                occ_zs = np.where(grid.occupied[y, x, :])[0]
-                z0     = int(occ_zs[0]) if len(occ_zs) > 0 else 0
-                front_colors[y, x] = grid.colors[y, x, z0]
-
-    # Blend ONLY the 1px silhouette border ring toward interior color.
-    # Interior dark pixels (eyes, features, hair) keep original colors.
-    is_border = detect_outlines(front_occ)
-    blended   = _blend_for_viewer(front_colors, front_occ, is_border, blend=0.80)
 
     color_map, region_map = [], []
     for y in range(H):
         crow, rrow = [], []
         for x in range(W):
             if depth[y, x] > 0:
-                c = blended[y, x]
+                occ_zs = np.where(grid.occupied[y, x, :])[0]
+                z0     = int(occ_zs[0]) if len(occ_zs) > 0 else 0
+                c      = grid.viewer_colors[y, x, z0]
                 crow.append([int(c[0]), int(c[1]), int(c[2])])
                 rrow.append(int(grid.region_map[y, x]))
             else:
