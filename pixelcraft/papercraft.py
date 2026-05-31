@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import math
 from pathlib import Path
+import numpy as np
 from voxelizer import VoxelGrid, render_all_faces, smooth_grid
 
 
@@ -61,7 +62,7 @@ def prepare_front_face(sprite, size):
     return face
 
 
-def prepare_back_face(sprite, size):
+def prepare_back_face(sprite, size, external_region_map=None):
     """
     Generate a back-of-head face that:
       - Has the EXACT same silhouette / outline as the front face
@@ -70,17 +71,11 @@ def prepare_back_face(sprite, size):
         pixel's row, giving natural color bands (hair on top, shirt below)
         without any dark feature pixels bleeding through
 
-    Approach:
-      1. Render the front face at the target size (exact silhouette + outline).
-      2. Build a per-row flat fill color from the original sprite (bright pixels
-         only, ignoring dark line art and features).
-      3. Re-draw the face: for every pixel that belongs to the character
-         (non-background in the front render), replace its color with the
-         flat row color — preserving the outline ring with the outline's own
-         blended color so the edge still reads as a clean silhouette.
-      4. Mirror horizontally so left/right reads correctly as a back view.
+    When external_region_map is supplied the per-row color logic still runs
+    on the raw sprite; the region map is not used for the back-face render
+    (it only affects depth), so the parameter is accepted but not needed here.
+    It is kept for API consistency so callers can always pass it through.
     """
-    import numpy as np
     from voxelizer import DARK_THRESHOLD, _bg_mask, _resize
 
     # ── Step 1: build the front face at target size (gives us the silhouette) ──
@@ -129,9 +124,6 @@ def prepare_back_face(sprite, size):
             last = row_colors[i]
 
     # ── Step 3: map low-res row colors onto the full-size face ────────────────
-    # Each pixel row in the output maps back to a row in the low-res sprite.
-    # We use the same centering logic as prepare_front_face (thumbnail keeps
-    # aspect ratio; sprite is centered in the square canvas).
     s_small = small  # already resized PIL image
     disp_w  = int(s_small.width  * min(size / s_small.width, size / s_small.height))
     disp_h  = int(s_small.height * min(size / s_small.width, size / s_small.height))
@@ -171,18 +163,28 @@ NET_LAYOUT = {
 }
 
 
-def _resolve_faces(sprite, size, side_style, use_3d_renders=True):
+def _resolve_faces(sprite, size, side_style, use_3d_renders=True,
+                   external_region_map=None):
+    """
+    Build the six face images.
+
+    Parameters
+    ----------
+    external_region_map : np.ndarray | None
+        If supplied, passed through to VoxelGrid.build() so the user's
+        hand-painted regions drive the depth model.
+    """
     if use_3d_renders:
-        grid  = VoxelGrid.build(sprite)
+        grid  = VoxelGrid.build(sprite, external_region_map=external_region_map)
         grid  = smooth_grid(grid)
         bg    = get_bg_color(sprite)
         faces = render_all_faces(grid, face_size=size, bg=bg)
         faces["front"] = prepare_front_face(sprite, size)
-        faces["back"]  = prepare_back_face(sprite, size)
+        faces["back"]  = prepare_back_face(sprite, size, external_region_map)
         return faces
     return {
         "front":  prepare_front_face(sprite, size),
-        "back":   prepare_back_face(sprite, size),
+        "back":   prepare_back_face(sprite, size, external_region_map),
         "top":    _make_side(size, side_style, sprite),
         "bottom": _make_side(size, side_style, sprite),
         "left":   _make_side(size, side_style, sprite),
@@ -202,9 +204,9 @@ def _make_side(size, style, sprite):
 # ── Net preview & PDF ─────────────────────────────────────────────────────────
 
 def generate_net_preview(sprite, face_size_px=300, side_style="Dominant color",
-                         use_3d_renders=True):
+                         use_3d_renders=True, external_region_map=None):
     fs    = face_size_px
-    faces = _resolve_faces(sprite, fs, side_style, use_3d_renders)
+    faces = _resolve_faces(sprite, fs, side_style, use_3d_renders, external_region_map)
     pad   = 20
     canvas = Image.new("RGB", (4*fs + 2*pad, 3*fs + 2*pad), (245, 245, 250))
     draw   = ImageDraw.Draw(canvas)
@@ -255,7 +257,7 @@ def _draw_fold_lines(draw, name, col, row, fs, pad):
 
 def generate_papercraft_pdf(sprite, face_size_cm=6.0, tab_size_cm=1.0,
                             side_style="Dominant color", add_instructions=True,
-                            use_3d_renders=True):
+                            use_3d_renders=True, external_region_map=None):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import cm
     from reportlab.pdfgen import canvas as rl_canvas
@@ -273,11 +275,12 @@ def generate_papercraft_pdf(sprite, face_size_cm=6.0, tab_size_cm=1.0,
     c.setFont("Helvetica", 9)
     c.setFillColorRGB(0.5, 0.5, 0.6)
     source = "3D orthographic renders" if use_3d_renders else side_style
+    region_note = " · custom regions" if external_region_map is not None else ""
     c.drawCentredString(PAGE_W/2, PAGE_H - 1.9*cm,
-                        f"Face: {face_size_cm}cm  |  Tab: {tab_size_cm}cm  |  Faces: {source}")
+                        f"Face: {face_size_cm}cm  |  Tab: {tab_size_cm}cm  |  Faces: {source}{region_note}")
 
     face_px   = int(face_size_cm * 96)
-    faces_img = _resolve_faces(sprite, face_px, side_style, use_3d_renders)
+    faces_img = _resolve_faces(sprite, face_px, side_style, use_3d_renders, external_region_map)
 
     net_w = 4*fs + 2*tab
     net_h = 3*fs + 2*tab

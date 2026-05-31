@@ -50,6 +50,15 @@ MIN_PROFILE    = 0.55  # ellipse floor — 55% at edge gives smooth rounded cyli
                        # without making edge pixels (eyes, ears) pop out unevenly
                        # (v4 used 0.30 which caused the half-eye protrusion bug)
 
+# Region integer codes exposed for external use (e.g. the painter widget)
+REGION_CODES = {
+    "head":  REGION_HEAD,
+    "torso": REGION_TORSO,
+    "limb":  REGION_LIMB,
+    "tuft":  REGION_TUFT,
+}
+REGION_NAMES = {v: k for k, v in REGION_CODES.items()}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1 — Pre-process
@@ -135,6 +144,24 @@ def classify_regions(occupied: np.ndarray) -> np.ndarray:
             region_map[y, :] = REGION_LIMB
 
     return region_map
+
+
+def scale_region_map(region_map_src: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
+    """
+    Scale a region map painted at one resolution down to the voxeliser's working
+    resolution using nearest-neighbour mapping.  Only occupied pixels (value ≥ 0)
+    are transferred; unset pixels fall back to REGION_LIMB.
+    """
+    src_h, src_w = region_map_src.shape
+    out = np.full((target_h, target_w), REGION_LIMB, dtype=np.int8)
+    for y in range(target_h):
+        for x in range(target_w):
+            src_y = int(y / target_h * src_h)
+            src_x = int(x / target_w * src_w)
+            src_y = max(0, min(src_y, src_h - 1))
+            src_x = max(0, min(src_x, src_w - 1))
+            out[y, x] = region_map_src[src_y, src_x]
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -365,7 +392,25 @@ class VoxelGrid:
         self.region_map    = np.zeros((H, W), dtype=np.int8)
 
     @classmethod
-    def build(cls, sprite: Image.Image) -> "VoxelGrid":
+    def build(
+        cls,
+        sprite: Image.Image,
+        external_region_map: np.ndarray | None = None,
+    ) -> "VoxelGrid":
+        """
+        Build a VoxelGrid from a sprite.
+
+        Parameters
+        ----------
+        sprite : PIL.Image
+            Source sprite (any mode; converted internally).
+        external_region_map : np.ndarray | None
+            Optional integer array (values = REGION_* constants) at the
+            display resolution of the painter widget.  When supplied it
+            replaces the auto-classifier; it is scaled to the voxeliser's
+            working resolution via nearest-neighbour mapping.
+            Pass None (default) to use the automatic classifier.
+        """
         # Resize first, then deoutline so resampling doesn't reintroduce darks.
         sprite_small = _resize(sprite.convert("RGBA"))
         sprite_vox   = deoutline_sprite(sprite_small)
@@ -373,7 +418,15 @@ class VoxelGrid:
         rgba, occupied, colors = preprocess(sprite_vox)
         H, W = occupied.shape
 
-        region_map = classify_regions(occupied)
+        # ── Region map: external (painter) or auto-classify ───────────────────
+        if external_region_map is not None:
+            region_map = scale_region_map(external_region_map, H, W)
+            # Only apply to occupied pixels; background stays as-is
+            region_map = region_map * occupied + np.full((H, W), REGION_LIMB, dtype=np.int8) * (~occupied)
+            region_map = region_map.astype(np.int8)
+        else:
+            region_map = classify_regions(occupied)
+
         is_outline = detect_outlines(occupied)
         is_dark    = detect_dark_pixels(colors, occupied)
 

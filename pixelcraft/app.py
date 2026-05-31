@@ -1,16 +1,28 @@
-import streamlit as st
-import streamlit.components.v1 as components
-from PIL import Image
+import base64
 import io
 import json
 from pathlib import Path
+
+import numpy as np
+import streamlit as st
+import streamlit.components.v1 as components
+from PIL import Image
+
 from papercraft import (
     generate_papercraft_pdf,
     generate_net_preview,
     get_dominant_colors,
     get_bg_color,
 )
-from voxelizer import VoxelGrid, render_all_faces, smooth_grid, export_grid_json
+from voxelizer import (
+    VoxelGrid,
+    render_all_faces,
+    smooth_grid,
+    export_grid_json,
+    classify_regions,
+    preprocess,
+    REGION_HEAD, REGION_TORSO, REGION_LIMB, REGION_TUFT,
+)
 
 st.set_page_config(
     page_title="PixelCraft — Papercraft Net Generator",
@@ -88,8 +100,57 @@ hr { border: none; border-top: 1px solid #2a2a3d; margin: 2rem 0; }
 p, li { color: #c4c4d4; font-family: 'DM Sans', sans-serif; }
 h1, h2, h3 { color: #e0e0f0; }
 [data-testid="stAlert"] { border-radius: 10px !important; }
+/* Region painter toggle styling */
+.region-toggle {
+    background: #16161f; border: 1px solid #2a2a3d;
+    border-radius: 12px; padding: 1rem; margin: 0.5rem 0;
+}
 </style>
 """, unsafe_allow_html=True)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def sprite_to_b64(sprite: Image.Image) -> str:
+    """Return a data-URI PNG for embedding in the painter HTML."""
+    buf = io.BytesIO()
+    sprite.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def auto_region_map_json(sprite: Image.Image) -> str:
+    """
+    Run the auto-classifier on the sprite and return a JSON 2-D array
+    [H][W] of region ints (or null for background pixels).
+    """
+    from voxelizer import _resize, _bg_mask
+    small = _resize(sprite.convert("RGBA"))
+    rgba  = np.array(small, dtype=np.uint8)
+    is_bg = _bg_mask(rgba)
+    occ   = ~is_bg
+    rmap  = classify_regions(occ)
+
+    rows = []
+    for y in range(rmap.shape[0]):
+        row = []
+        for x in range(rmap.shape[1]):
+            row.append(int(rmap[y, x]) if occ[y, x] else None)
+        rows.append(row)
+    return json.dumps(rows)
+
+
+def load_painter_html(sprite: Image.Image, auto_regions_json: str) -> str:
+    """Inject sprite + auto-region data into the painter template."""
+    from voxelizer import _resize
+    # Use the down-scaled sprite so painter pixels 1:1 match voxeliser pixels
+    small  = _resize(sprite.convert("RGBA"))
+    b64    = sprite_to_b64(small)
+    html   = (Path(__file__).parent / "region_painter.html").read_text(encoding="utf-8")
+    html   = html.replace("__SPRITE_B64__",   b64)
+    html   = html.replace("__AUTO_REGIONS__", auto_regions_json)
+    html   = html.replace("__SPRITE_W__",     str(small.width))
+    html   = html.replace("__SPRITE_H__",     str(small.height))
+    return html
 
 
 def load_viewer(grid_data: dict, sprite_w: int, sprite_h: int) -> str:
@@ -102,6 +163,20 @@ def load_viewer(grid_data: dict, sprite_w: int, sprite_h: int) -> str:
     return html
 
 
+def region_map_from_painter(data: list[list[int | None]], sprite_w: int, sprite_h: int) -> np.ndarray:
+    """
+    Convert the painter's 2-D list (H×W, values 0-3 or -1) to a numpy int8
+    array at the painter's resolution.  Unset pixels (-1) are left as REGION_LIMB
+    so the voxeliser falls back gracefully.
+    """
+    arr = np.full((sprite_h, sprite_w), REGION_LIMB, dtype=np.int8)
+    for y, row in enumerate(data):
+        for x, v in enumerate(row):
+            if v is not None and v >= 0:
+                arr[y, x] = int(v)
+    return arr
+
+
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown('<div class="hero-title">PIXEL<br>CRAFT</div>', unsafe_allow_html=True)
 st.markdown('<div class="hero-sub">turn any pixel art sprite into a printable papercraft cube</div>', unsafe_allow_html=True)
@@ -112,12 +187,19 @@ with st.expander("✦ how it works", expanded=False):
         <h4>STEPS</h4>
         <p>① Upload your pixel art sprite (PNG with transparency works best)</p>
         <p>② Preview the 3D voxel model — rotate, zoom, switch voxel shapes</p>
-        <p>③ Configure cube size and generate — all 6 faces are auto-rendered from each angle</p>
-        <p>④ Download the PDF, print, cut, fold, and glue</p>
+        <p>③ (Optional) Paint region zones manually when auto-detect goes wrong</p>
+        <p>④ Configure cube size and generate — all 6 faces are auto-rendered from each angle</p>
+        <p>⑤ Download the PDF, print, cut, fold, and glue</p>
     </div>
     """, unsafe_allow_html=True)
 
 st.markdown("---")
+
+# ── Session state init ────────────────────────────────────────────────────────
+if "external_region_map" not in st.session_state:
+    st.session_state.external_region_map = None   # None = use auto-detect
+if "painter_message_received" not in st.session_state:
+    st.session_state.painter_message_received = False
 
 # ── Step 1: Upload ────────────────────────────────────────────────────────────
 st.markdown('<div class="step-badge">STEP 01 — UPLOAD SPRITE</div>', unsafe_allow_html=True)
@@ -167,10 +249,13 @@ if uploaded:
         st.caption(f"⚡ Downscaled to {preview_sprite.width}×{preview_sprite.height} for 3D performance.")
 
     with st.spinner("Building 3D model…"):
-        grid = VoxelGrid.build(preview_sprite)
+        grid = VoxelGrid.build(
+            preview_sprite,
+            external_region_map=st.session_state.external_region_map,
+        )
         grid = smooth_grid(grid)
         grid_data = export_grid_json(grid)
-    # Check occupancy via depthMap (voxel_count key doesn't exist in export_grid_json)
+
     has_voxels = any(grid_data['depthMap'][y][x] > 0
                      for y in range(grid_data['H'])
                      for x in range(grid_data['W']))
@@ -179,6 +264,127 @@ if uploaded:
     else:
         viewer_html = load_viewer(grid_data, preview_sprite.width, preview_sprite.height)
         components.html(viewer_html, height=460, scrolling=False)
+
+    st.markdown("---")
+
+    # ── Step 2b: Region Painter ───────────────────────────────────────────────
+    st.markdown('<div class="step-badge">STEP 02b — REGION PAINTER (optional)</div>', unsafe_allow_html=True)
+
+    # Show current mode badge
+    if st.session_state.external_region_map is not None:
+        st.success("✦ Using **custom regions** from painter. Re-open painter to adjust, or reset below.")
+    else:
+        st.info("ℹ Auto-detect is active. Open the painter below to override regions manually.")
+
+    with st.expander("🎨 Open region painter", expanded=False):
+        st.markdown("""
+        <div class="info-card" style="margin-bottom:0.75rem;">
+            <h4>HOW TO PAINT</h4>
+            <p>• Choose a region color (Head / Torso / Limbs / Tuft) and paint over the sprite pixels.</p>
+            <p>• Unpainted pixels fall back to auto-detect — you only need to fix problem areas.</p>
+            <p>• Keyboard shortcuts: H=head, T=torso, L=limbs, U=tuft, E=erase · 1/2/3=brush size · Ctrl+Z=undo</p>
+            <p>• Click <strong>Apply regions →</strong> when done, then regenerate the 3D preview.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Build and render the painter
+        auto_json   = auto_region_map_json(sprite)
+        painter_html = load_painter_html(sprite, auto_json)
+
+        # We need a unique key per upload so the component re-mounts on new uploads
+        painter_key = f"painter_{hash(img_bytes[:64])}"
+
+        # Render the painter component — height is proportional to sprite aspect
+        from voxelizer import _resize
+        _sm = _resize(sprite.convert("RGBA"))
+        painter_h = max(300, min(600, int(_sm.height / _sm.width * 400) + 160))
+
+        painter_value = components.html(
+            painter_html,
+            height=painter_h + 80,
+            scrolling=False,
+        )
+
+        # ── Receive postMessage from painter via a hidden text_input hack ─────
+        # Streamlit can't receive postMessage directly, so we use a workaround:
+        # we render a small JS snippet that listens for the message and writes
+        # the JSON into a Streamlit text_input via the DOM.
+        # The user clicks "Apply regions" in the painter, which posts a message,
+        # and we capture it via a query-param bridge.
+
+        st.markdown("""
+        <script>
+        window.addEventListener('message', function(e) {
+            if (!e.data || e.data.type !== 'pixelcraft_regions') return;
+            // Write the grid JSON into a hidden input so Streamlit can read it
+            var inp = window.parent.document.querySelector('input[data-painter-bridge="1"]');
+            if (inp) {
+                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value').set;
+                nativeInputValueSetter.call(inp, JSON.stringify(e.data));
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        });
+        </script>
+        """, unsafe_allow_html=True)
+
+        # Text input bridge (hidden via CSS-ish label trick)
+        bridge_val = st.text_input(
+            "Region data (auto-filled by painter)",
+            key="painter_bridge",
+            label_visibility="collapsed",
+            help="This field is filled automatically when you click 'Apply regions' in the painter above.",
+        )
+        # Add data attribute via markdown so JS can find it
+        st.markdown("""
+        <script>
+        (function() {
+            var inputs = window.parent.document.querySelectorAll('input[type="text"]');
+            inputs.forEach(function(inp) {
+                if (inp.getAttribute('data-painter-bridge')) return;
+                // Identify the bridge input by proximity — mark the last text input
+                // that has no visible label sibling (collapsed label).
+                inp.setAttribute('data-painter-bridge', '1');
+            });
+        })();
+        </script>
+        """, unsafe_allow_html=True)
+
+        if bridge_val:
+            try:
+                msg = json.loads(bridge_val)
+                if msg.get("type") == "pixelcraft_regions":
+                    rmap = region_map_from_painter(
+                        msg["data"], msg["w"], msg["h"]
+                    )
+                    st.session_state.external_region_map = rmap
+                    st.success("✦ Custom regions applied! Scroll up — the 3D preview will update on next rerun.")
+                    st.rerun()
+            except Exception:
+                pass  # ignore malformed data
+
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            if st.button("⟳  Reset to auto-detect", key="reset_regions"):
+                st.session_state.external_region_map = None
+                st.rerun()
+        with col_r2:
+            if st.session_state.external_region_map is not None:
+                rmap_display = st.session_state.external_region_map
+                region_counts = {
+                    "head":  int((rmap_display == 0).sum()),
+                    "torso": int((rmap_display == 1).sum()),
+                    "limb":  int((rmap_display == 2).sum()),
+                    "tuft":  int((rmap_display == 3).sum()),
+                }
+                st.markdown(f"""
+                <div class="info-card" style="margin-top:0">
+                    <h4>REGION COUNTS</h4>
+                    <p>🟠 Head: {region_counts['head']} px</p>
+                    <p>🔵 Torso: {region_counts['torso']} px</p>
+                    <p>🟢 Limbs: {region_counts['limb']} px</p>
+                    <p>🟣 Tuft: {region_counts['tuft']} px</p>
+                </div>""", unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -205,7 +411,10 @@ if uploaded:
     if use_3d_renders:
         with st.expander("👁 Preview auto-rendered faces", expanded=False):
             with st.spinner("Rendering 6 faces…"):
-                _g = VoxelGrid.build(sprite)
+                _g = VoxelGrid.build(
+                    sprite,
+                    external_region_map=st.session_state.external_region_map,
+                )
                 _g = smooth_grid(_g)
                 faces_preview = render_all_faces(_g, face_size=120, bg=get_bg_color(sprite))
             face_order = ["front", "back", "left", "right", "top", "bottom"]
@@ -219,6 +428,11 @@ if uploaded:
     # ── Step 4: Generate ──────────────────────────────────────────────────────
     st.markdown('<div class="step-badge">STEP 04 — GENERATE</div>', unsafe_allow_html=True)
 
+    if st.session_state.external_region_map is not None:
+        st.caption("✦ Will use your custom region map for depth generation.")
+    else:
+        st.caption("Using auto-detected regions. Paint regions above if the 3D shape looks wrong.")
+
     if st.button("⬡  Generate Papercraft Net"):
         with st.spinner("Building your cube net…"):
             try:
@@ -226,6 +440,7 @@ if uploaded:
                     sprite, face_size_px=300,
                     side_style=side_style,
                     use_3d_renders=use_3d_renders,
+                    external_region_map=st.session_state.external_region_map,
                 )
                 st.markdown("**Net preview:**")
                 st.image(preview_img, use_container_width=True)
@@ -237,6 +452,7 @@ if uploaded:
                     side_style=side_style,
                     add_instructions=add_instructions,
                     use_3d_renders=use_3d_renders,
+                    external_region_map=st.session_state.external_region_map,
                 )
 
                 st.markdown("---")
