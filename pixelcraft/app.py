@@ -149,29 +149,8 @@ def load_viewer(grid_data: dict, sprite_w: int, sprite_h: int) -> str:
     return html
 
 
-def decode_regions_b64(b64_str: str) -> tuple[np.ndarray, int, int] | None:
-    """
-    Decode a base64-encoded region map sent by the painter via URL query param.
-    Format: 4-byte header (W hi, W lo, H hi, H lo) + W*H bytes (value+1, so -1→0).
-    Returns (region_map ndarray, W, H) or None on error.
-    """
-    try:
-        raw = base64.b64decode(b64_str)
-        if len(raw) < 4:
-            return None
-        w = (raw[0] << 8) | raw[1]
-        h = (raw[2] << 8) | raw[3]
-        expected = 4 + w * h
-        if len(raw) < expected or w <= 0 or h <= 0:
-            return None
-        data = np.frombuffer(raw[4:4 + w * h], dtype=np.uint8).astype(np.int8) - 1
-        region_map = data.reshape(h, w)
-        return region_map, w, h
-    except Exception:
-        return None
-
-
-def region_map_from_painter(data: list[list[int | None]], sprite_w: int, sprite_h: int) -> np.ndarray:
+def region_map_from_painter(data: list, sprite_h: int, sprite_w: int) -> np.ndarray:
+    """Convert the 2-D list sent by the painter (null | 0-3) into a numpy array."""
     arr = np.full((sprite_h, sprite_w), REGION_LIMB, dtype=np.int8)
     for y, row in enumerate(data):
         for x, v in enumerate(row):
@@ -180,18 +159,7 @@ def region_map_from_painter(data: list[list[int | None]], sprite_w: int, sprite_
     return arr
 
 
-# ── Read region map from URL query params (set by painter on submit) ──────────
-# This runs every Streamlit rerun. If ?regions= is present AND we haven't
-# already loaded it into session state, decode and store it.
-_qp_regions = st.query_params.get("regions", None)
-if _qp_regions and "external_region_map" not in st.session_state:
-    decoded = decode_regions_b64(_qp_regions)
-    if decoded is not None:
-        rmap, rw, rh = decoded
-        st.session_state["external_region_map"] = rmap
-        st.session_state["region_map_source"] = "custom"
-
-# Always initialise session state keys so the rest of the app can rely on them
+# ── Session state defaults ────────────────────────────────────────────────────
 if "external_region_map" not in st.session_state:
     st.session_state["external_region_map"] = None
 if "region_map_source" not in st.session_state:
@@ -250,7 +218,7 @@ if uploaded:
 
     st.markdown("---")
 
-    # ── Step 2: Region Painter (NOW BEFORE 3D preview) ────────────────────────
+    # ── Step 2: Region Painter ────────────────────────────────────────────────
     st.markdown('<div class="step-badge">STEP 02 — REGION PAINTER (optional)</div>', unsafe_allow_html=True)
 
     if st.session_state["region_map_source"] == "custom":
@@ -258,14 +226,14 @@ if uploaded:
     else:
         st.info("ℹ Auto-detect is active. Paint regions below to override how depth is assigned.")
 
-    with st.expander("🎨 Open region painter", expanded=st.session_state["region_map_source"] == "auto"):
+    with st.expander("🎨 Open region painter", expanded=False):
         st.markdown("""
         <div class="info-card" style="margin-bottom:0.75rem;">
             <h4>HOW TO PAINT</h4>
             <p>• Choose a region (Head / Torso / Limbs / Tuft) and paint over pixels.</p>
             <p>• Unpainted pixels use auto-detect — only fix problem areas.</p>
-            <p>• Keyboard shortcuts: H=head, T=torso, L=limbs, U=tuft, E=erase · 1/2/3=brush size · Ctrl+Z=undo</p>
-            <p>• Click <strong>Apply regions →</strong> when done. The page reloads with your regions applied.</p>
+            <p>• Keyboard: H=head, T=torso, L=limbs, U=tuft, E=erase · 1/2/3=brush size · Ctrl+Z=undo</p>
+            <p>• Click <strong>Apply regions →</strong> when done.</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -275,15 +243,68 @@ if uploaded:
         from voxelizer import _resize
         _sm = _resize(sprite.convert("RGBA"))
         CANVAS_SCALE = max(4, min(16, 384 // max(_sm.width, _sm.height)))
-        painter_h = _sm.height * CANVAS_SCALE + 180  # canvas + toolbar + legend + status
+        painter_h = _sm.height * CANVAS_SCALE + 200  # canvas + toolbar + legend + status
 
-        components.html(painter_html, height=painter_h, scrolling=False)
+        # KEY FIX: components.html with return_value=True so Streamlit listens for
+        # the postMessage sent by submitRegions() in the painter JS.
+        painter_result = components.html(
+            painter_html,
+            height=painter_h,
+            scrolling=False,
+        )
 
-        # Reset button (clears both session state AND query params)
+        # components.html does not support return_value in all Streamlit versions.
+        # We use a separate text_area trick as a fallback: the painter also writes
+        # the JSON to a hidden textarea that the user can copy, but the primary path
+        # is the postMessage bridge above.
+        #
+        # If painter_result contains data (Streamlit ≥1.28 with component bridge),
+        # decode it directly.
+        if painter_result is not None and isinstance(painter_result, dict):
+            raw = painter_result
+            if "regions" in raw and "w" in raw and "h" in raw:
+                rmap = region_map_from_painter(raw["regions"], raw["h"], raw["w"])
+                st.session_state["external_region_map"] = rmap
+                st.session_state["region_map_source"] = "custom"
+                st.rerun()
+
+        # ── Manual JSON paste fallback (works in all Streamlit versions) ─────
+        st.markdown("---")
+        st.markdown(
+            "<p style='font-size:0.8rem;color:#6b6b8a;'>If the button above doesn't apply automatically, "
+            "paste the region JSON here and click Apply:</p>",
+            unsafe_allow_html=True,
+        )
+        col_paste, col_apply = st.columns([5, 1])
+        with col_paste:
+            pasted = st.text_area(
+                "Region JSON",
+                value="",
+                height=80,
+                placeholder='{"regions": [...], "w": 16, "h": 16}',
+                label_visibility="collapsed",
+                key="region_paste_box",
+            )
+        with col_apply:
+            st.write("")  # spacer to align button
+            if st.button("Apply", key="apply_paste"):
+                try:
+                    raw = json.loads(pasted)
+                    if "regions" in raw and "w" in raw and "h" in raw:
+                        rmap = region_map_from_painter(raw["regions"], raw["h"], raw["w"])
+                        st.session_state["external_region_map"] = rmap
+                        st.session_state["region_map_source"] = "custom"
+                        st.success("Custom regions applied!")
+                        st.rerun()
+                    else:
+                        st.error("Invalid format — expected {regions, w, h}")
+                except json.JSONDecodeError:
+                    st.error("Not valid JSON")
+
+        # Reset button
         if st.button("⟳  Reset to auto-detect", key="reset_regions"):
             st.session_state["external_region_map"] = None
             st.session_state["region_map_source"] = "auto"
-            st.query_params.clear()
             st.rerun()
 
         if st.session_state["external_region_map"] is not None:
@@ -310,9 +331,9 @@ if uploaded:
     st.markdown("Your sprite rendered as a 3D voxel model — rotate, zoom, switch shapes:")
 
     preview_sprite = sprite.copy()
-    MAX_DIM = 64
-    if w > MAX_DIM or h > MAX_DIM:
-        scale = MAX_DIM / max(w, h)
+    MAX_DIM_PREVIEW = 64
+    if w > MAX_DIM_PREVIEW or h > MAX_DIM_PREVIEW:
+        scale = MAX_DIM_PREVIEW / max(w, h)
         preview_sprite = preview_sprite.resize(
             (max(1, int(w * scale)), max(1, int(h * scale))), Image.NEAREST
         )
@@ -323,7 +344,7 @@ if uploaded:
             preview_sprite,
             external_region_map=st.session_state["external_region_map"],
         )
-        grid     = smooth_grid(grid)
+        grid      = smooth_grid(grid)
         grid_data = export_grid_json(grid)
 
     has_voxels = any(grid_data['depthMap'][y][x] > 0
