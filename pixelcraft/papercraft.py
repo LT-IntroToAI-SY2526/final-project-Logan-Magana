@@ -1,7 +1,6 @@
 """
 papercraft.py — Backend logic for PixelCraft.
 Generates cube nets, PDFs, and 6-face orthographic renders from pixel art sprites.
-No HTML/JS here — that lives in viewer.html.
 """
 
 from PIL import Image, ImageDraw, ImageFont
@@ -12,7 +11,7 @@ import numpy as np
 from voxelizer import VoxelGrid, render_all_faces, smooth_grid
 
 
-# ── Color utilities ───────────────────────────────────────────────────────────
+# ── Color / background utilities ──────────────────────────────────────────────
 
 def get_dominant_colors(img: Image.Image, n: int = 6):
     rgba = img.convert("RGBA")
@@ -28,9 +27,58 @@ def get_dominant_colors(img: Image.Image, n: int = 6):
     return filtered
 
 
-def get_bg_color(img: Image.Image):
+def get_bg_color(img: Image.Image) -> tuple[int, int, int]:
+    """
+    Detect the background color robustly.
+
+    Priority order:
+      1. Transparency: if >4% of pixels are transparent, bg is the canvas
+         color we'll render on — use a neutral light grey for PDF/preview
+         (the actual transparent areas are masked out by the sprite paste).
+      2. Corner agreement: sample the 4 corners. If they agree within tol=30
+         per channel, that IS the background (handles solid-color backgrounds
+         like Torchic's pure black canvas). Return the corner mean directly.
+      3. Fallback: dominant bright color (original behaviour, kept for sprites
+         that have no clear corner bg — e.g. full-bleed illustrations).
+    """
+    rgba = np.array(img.convert("RGBA"), dtype=np.uint8)
+    H, W = rgba.shape[:2]
+    alpha = rgba[:, :, 3]
+
+    # 1. Transparent background
+    if (alpha < 20).sum() > H * W * 0.04:
+        return (240, 240, 245)   # light neutral — transparent sprites render on this
+
+    # 2. Corner agreement
+    corners = np.array([
+        rgba[0,   0,   :3],
+        rgba[0,   W-1, :3],
+        rgba[H-1, 0,   :3],
+        rgba[H-1, W-1, :3],
+    ], dtype=np.float32)
+    corner_mean = corners.mean(axis=0)
+    corner_std  = corners.std(axis=0).max()
+    if corner_std < 30:
+        # Corners all agree — this is the real background color
+        return tuple(int(v) for v in corner_mean)
+
+    # 3. Dominant bright color fallback
     r, g, b, *_ = get_dominant_colors(img, n=1)[0]
     return (r, g, b)
+
+
+def _sprite_occupancy(sprite: Image.Image) -> np.ndarray:
+    """
+    Return a boolean H×W mask of which pixels belong to the sprite
+    (i.e. are NOT background), at the sprite's native resolution.
+
+    Works for both transparent sprites (alpha channel) and opaque sprites
+    with a solid background colour (corner-detection).
+    """
+    from voxelizer import _resize, _bg_mask
+    small = _resize(sprite.convert("RGBA"))
+    rgba  = np.array(small, dtype=np.uint8)
+    return ~_bg_mask(rgba)   # True = sprite pixel
 
 
 def make_checkerboard(size, color1, color2, tile=None):
@@ -49,104 +97,110 @@ def make_gradient_face(size, color1, color2):
     draw = ImageDraw.Draw(img)
     for y in range(size):
         t = y / size
-        draw.line([(0, y), (size, y)], fill=tuple(int(color1[i]*(1-t)+color2[i]*t) for i in range(3)))
+        draw.line([(0, y), (size, y)],
+                  fill=tuple(int(color1[i]*(1-t)+color2[i]*t) for i in range(3)))
     return img
 
 
 def prepare_front_face(sprite, size):
     face = Image.new("RGB", (size, size), get_bg_color(sprite))
     s = sprite.copy()
-    s.thumbnail((size, size), Image.NEAREST)
-    ox, oy = (size - s.width) // 2, (size - s.height) // 2
+    # Scale to fill the face in both directions — thumbnail() only downscales,
+    # which left the sprite tiny (64px) on a 300px canvas for small sprites.
+    scale = min(size / s.width, size / s.height)
+    new_w = max(1, int(s.width  * scale))
+    new_h = max(1, int(s.height * scale))
+    s = s.resize((new_w, new_h), Image.NEAREST)
+    ox, oy = (size - new_w) // 2, (size - new_h) // 2
     face.paste(s, (ox, oy), s if s.mode == "RGBA" else None)
     return face
 
 
 def prepare_back_face(sprite, size, external_region_map=None):
     """
-    Generate a back-of-head face that:
-      - Has the EXACT same silhouette / outline as the front face
-      - Has NO facial features (eyes, nose, mouth, details) in the interior
-      - Fills each interior pixel with the dominant bright color from that
-        pixel's row, giving natural color bands (hair on top, shirt below)
-        without any dark feature pixels bleeding through
+    Generate a clean back face:
+      - Same silhouette as the front, derived from the sprite's own occupancy
+        mask (NOT from colour-matching the rendered front face, which breaks
+        when the outline colour == background colour, e.g. black-on-black).
+      - Interior filled with per-row dominant BRIGHT colour (dark/outline pixels
+        are excluded from the row median so eyes, pupils, beaks don't bleed
+        through).
+      - Horizontally mirrored (back-of-head = left/right flip).
 
-    When external_region_map is supplied the per-row color logic still runs
-    on the raw sprite; the region map is not used for the back-face render
-    (it only affects depth), so the parameter is accepted but not needed here.
-    It is kept for API consistency so callers can always pass it through.
+    The external_region_map parameter is accepted for API consistency but is
+    not used here (region maps only affect depth, not the face render).
     """
-    from voxelizer import DARK_THRESHOLD, _bg_mask, _resize
+    from voxelizer import DARK_THRESHOLD, _resize, _bg_mask
 
-    # ── Step 1: build the front face at target size (gives us the silhouette) ──
-    front = prepare_front_face(sprite, size)
-    front_arr = np.array(front, dtype=np.uint8)          # (size, size, 3)
-    bg_rgb = get_bg_color(sprite)
-
-    # Background mask on the rendered front face (within 30 of bg color)
-    diff = np.abs(front_arr.astype(np.int32) - np.array(bg_rgb, dtype=np.int32))
-    is_bg_px = diff.max(axis=2) < 30                     # True = background
-
-    # ── Step 2: per-row dominant bright color from the LOW-RES sprite ─────────
     small  = _resize(sprite.convert("RGBA"))
     rgba_s = np.array(small, dtype=np.uint8)
     is_bg_s = _bg_mask(rgba_s)
-    occ_s   = ~is_bg_s
+    occ_s   = ~is_bg_s          # True = sprite pixel at low resolution
     cols_s  = rgba_s[:, :, :3]
     H_s, W_s = occ_s.shape
 
-    row_colors = []
+    bg_rgb = get_bg_color(sprite)
+
+    # ── Per-row dominant bright colour (bright = max channel >= DARK_THRESHOLD) ─
+    row_colors: list[tuple | None] = []
     for y in range(H_s):
         row_occ = occ_s[y, :]
         if not row_occ.any():
             row_colors.append(None)
             continue
-        row_cols = cols_s[y, row_occ]
-        # Only use bright pixels — skip dark outline / feature pixels
-        bright = row_cols[row_cols.max(axis=1) >= DARK_THRESHOLD]
+        row_cols = cols_s[y, row_occ]                         # only sprite pixels
+        bright   = row_cols[row_cols.max(axis=1) >= DARK_THRESHOLD]
         if len(bright) == 0:
-            row_colors.append(None)
+            row_colors.append(None)                           # all-dark row (outline)
         else:
             row_colors.append(tuple(int(v) for v in np.median(bright, axis=0)))
 
-    # Fill None rows from nearest non-None neighbor (forward then backward pass)
-    last = bg_rgb
+    # Fill None rows: forward pass then backward pass using nearest real colour.
+    # Prefer the nearest non-None neighbour rather than falling back to bg_rgb,
+    # so all-dark rows (outline tips) get the adjacent body colour, not black/bg.
+    last: tuple = bg_rgb
     for i in range(len(row_colors)):
-        if row_colors[i] is None:
-            row_colors[i] = last
-        else:
+        if row_colors[i] is not None:
             last = row_colors[i]
+        else:
+            row_colors[i] = last          # borrow from above
+
     last = bg_rgb
     for i in range(len(row_colors) - 1, -1, -1):
-        if row_colors[i] == bg_rgb and last != bg_rgb:
-            row_colors[i] = last
-        else:
+        if row_colors[i] != bg_rgb:
             last = row_colors[i]
+        elif last != bg_rgb:
+            row_colors[i] = last          # borrow from below (fixes bottom-only dark rows)
 
-    # ── Step 3: map low-res row colors onto the full-size face ────────────────
-    s_small = small  # already resized PIL image
-    disp_w  = int(s_small.width  * min(size / s_small.width, size / s_small.height))
-    disp_h  = int(s_small.height * min(size / s_small.width, size / s_small.height))
-    ox_px   = (size - disp_w) // 2
-    oy_px   = (size - disp_h) // 2
+    # ── Build silhouette mask at face resolution directly from sprite occupancy ─
+    # This is immune to the black-outline-on-black-bg issue because we use the
+    # occupancy mask (derived from _bg_mask) rather than colour-matching the
+    # rendered front face.
+    disp_scale = min(size / W_s, size / H_s)
+    disp_w     = int(W_s * disp_scale)
+    disp_h     = int(H_s * disp_scale)
+    ox_px      = (size - disp_w) // 2
+    oy_px      = (size - disp_h) // 2
 
-    # Build the back face array: start from bg, paint character pixels
+    # Scale the low-res occupancy mask up to face pixel size
+    occ_img    = Image.fromarray((occ_s * 255).astype(np.uint8), "L")
+    occ_scaled = occ_img.resize((disp_w, disp_h), Image.NEAREST)
+    occ_arr    = np.array(occ_scaled) > 128        # bool, shape (disp_h, disp_w)
+
+    # ── Fill back face ────────────────────────────────────────────────────────
     back_arr = np.full((size, size, 3), bg_rgb, dtype=np.uint8)
 
-    for py in range(size):
+    for py in range(disp_h):
         # Which low-res sprite row does this output row correspond to?
-        if py < oy_px or py >= oy_px + disp_h:
-            continue  # pure background row
-        sprite_row_f = (py - oy_px) / disp_h * H_s
-        sprite_row   = min(int(sprite_row_f), H_s - 1)
-        fill_color   = np.array(row_colors[sprite_row], dtype=np.uint8)
+        sprite_row = min(int(py / disp_h * H_s), H_s - 1)
+        fill_color = np.array(row_colors[sprite_row], dtype=np.uint8)
 
-        for px in range(size):
-            if is_bg_px[py, px]:
-                continue  # leave as background
-            back_arr[py, px] = fill_color
+        for px in range(disp_w):
+            if not occ_arr[py, px]:
+                continue                           # background — leave as bg_rgb
+            back_arr[oy_px + py, ox_px + px] = fill_color
 
-    # ── Step 4: mirror horizontally (back of head = left/right flipped) ───────
+    # ── Mirror horizontally (back of head = left/right flip) ─────────────────
     back_arr = back_arr[:, ::-1, :]
 
     return Image.fromarray(back_arr, "RGB")
@@ -165,15 +219,6 @@ NET_LAYOUT = {
 
 def _resolve_faces(sprite, size, side_style, use_3d_renders=True,
                    external_region_map=None):
-    """
-    Build the six face images.
-
-    Parameters
-    ----------
-    external_region_map : np.ndarray | None
-        If supplied, passed through to VoxelGrid.build() so the user's
-        hand-painted regions drive the depth model.
-    """
     if use_3d_renders:
         grid  = VoxelGrid.build(sprite, external_region_map=external_region_map)
         grid  = smooth_grid(grid)
@@ -194,7 +239,8 @@ def _resolve_faces(sprite, size, side_style, use_3d_renders=True,
 
 def _make_side(size, style, sprite):
     colors = get_dominant_colors(sprite, n=4)
-    c1, c2 = colors[0][:3], colors[1][:3] if len(colors) > 1 else (180, 180, 200)
+    c1 = colors[0][:3]
+    c2 = colors[1][:3] if len(colors) > 1 else (180, 180, 200)
     if style == "Dominant color":         return Image.new("RGB", (size, size), c1)
     elif style == "Gradient fade":        return make_gradient_face(size, c1, c2)
     elif style == "Checkerboard pattern": return make_checkerboard(size, c1, c2)
