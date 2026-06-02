@@ -17,8 +17,6 @@ body {
   flex-direction: column;
   align-items: center;
   padding: 24px 16px;
-  /* NOTE: user-select none only on canvas, not body — prevents accidental
-     text selection while painting without blocking click events elsewhere */
 }
 
 :root {
@@ -30,41 +28,30 @@ body {
 
 h1 {
   font-family: 'Press Start 2P', monospace;
-  font-size: 0.9rem;
-  color: #fff;
+  font-size: 0.9rem; color: #fff;
   text-shadow: 0 0 20px #a78bfa88;
-  margin-bottom: 4px;
-  letter-spacing: 0.05em;
+  margin-bottom: 4px; letter-spacing: 0.05em;
 }
-.subtitle {
-  font-size: 0.8rem;
-  color: #6b6b8a;
-  margin-bottom: 20px;
-}
+.subtitle { font-size: 0.8rem; color: #6b6b8a; margin-bottom: 20px; }
 
 #app {
-  width: 100%;
-  max-width: 520px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  width: 100%; max-width: 520px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+
+/* ── Error banner ── */
+#error-banner {
+  display: none; background: #3d1010; border: 1px solid #7c1d1d;
+  border-radius: 8px; padding: 8px 12px; color: #fca5a5; font-size: 11px;
 }
 
 /* ── Toolbar ── */
 #toolbar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  background: #16161f;
-  border: 1px solid #2a2a3d;
-  border-radius: 12px;
-  padding: 10px 12px;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  background: #16161f; border: 1px solid #2a2a3d;
+  border-radius: 12px; padding: 10px 12px;
 }
-.tool-label {
-  font-size: 9px; font-weight: 700; color: #6b6b8a;
-  letter-spacing: 0.1em; text-transform: uppercase;
-}
+.tool-label { font-size: 9px; font-weight: 700; color: #6b6b8a; letter-spacing: 0.1em; text-transform: uppercase; }
 .brush-btn {
   display: flex; align-items: center; gap: 5px;
   padding: 5px 10px; border-radius: 7px; border: 2px solid transparent;
@@ -109,13 +96,10 @@ h1 {
 
 /* ── Canvas ── */
 #canvas-wrap {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  background: #0d0d14;
-  border-radius: 12px;
-  border: 1px solid #2a2a3d;
-  padding: 16px;
+  display: flex; justify-content: center; align-items: center;
+  border-radius: 12px; border: 1px solid #2a2a3d; padding: 16px;
+  overflow: hidden;
+  background-color: #13131e;
   background-image:
     linear-gradient(45deg, #1a1a28 25%, transparent 25%),
     linear-gradient(-45deg, #1a1a28 25%, transparent 25%),
@@ -123,22 +107,16 @@ h1 {
     linear-gradient(-45deg, transparent 75%, #1a1a28 75%);
   background-size: 12px 12px;
   background-position: 0 0, 0 6px, 6px -6px, -6px 0;
-  background-color: #13131e;
-  /* FIX: allow canvas to shrink on narrow viewports */
-  overflow: hidden;
 }
 #canvas {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   cursor: crosshair;
   display: block;
-  /* FIX: constrain canvas to container width so coordinate math stays valid */
   max-width: 100%;
   max-height: 480px;
-  /* prevent text selection while painting */
   user-select: none;
   -webkit-user-select: none;
-  /* ensure touch events hit the canvas */
   touch-action: none;
   filter: drop-shadow(0 0 8px rgba(167,139,250,0.2));
 }
@@ -149,10 +127,7 @@ h1 {
   padding: 8px 12px; background: #16161f; border-radius: 10px;
   border: 1px solid #2a2a3d;
 }
-.legend-item {
-  display: flex; align-items: center; gap: 5px;
-  font-size: 10px; font-weight: 600; color: #8b8ba0;
-}
+.legend-item { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; color: #8b8ba0; }
 .legend-swatch { width: 12px; height: 12px; border-radius: 3px; }
 
 /* ── Status + submit ── */
@@ -170,27 +145,14 @@ h1 {
   transition: opacity 0.15s, transform 0.1s;
 }
 #submit-btn:hover { opacity: 0.88; transform: translateY(-1px); }
-#submit-btn.success {
-  background: linear-gradient(135deg, #059669, #34d399);
-  cursor: default;
-}
+#submit-btn.success { background: linear-gradient(135deg, #059669, #34d399); cursor: default; }
 #auto-btn {
   padding: 8px 13px; background: #1e1e2e; border: 1.5px solid #3d3d5c;
   color: #a78bfa; border-radius: 8px; font-size: 11px; font-weight: 700;
   cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all 0.15s;
 }
 #auto-btn:hover { border-color: #a78bfa; background: #2a1a4e; }
-
-/* ── Error banner ── */
-#error-banner {
-  display: none; background: #3d1010; border: 1px solid #7c1d1d;
-  border-radius: 8px; padding: 8px 12px; color: #fca5a5; font-size: 11px;
-}
-
-/* ── Shortcut hint ── */
-#shortcuts {
-  font-size: 9px; color: #3d3d5c; text-align: center; letter-spacing: 0.04em;
-}
+#shortcuts { font-size: 9px; color: #3d3d5c; text-align: center; letter-spacing: 0.04em; }
 
 /* ── Flash ── */
 #flash {
@@ -207,7 +169,8 @@ h1 {
 <p class="subtitle">paint zones → click Apply → close this tab</p>
 
 <div id="app">
-  <div id="error-banner" id="err"></div>
+  <!-- Single id, no duplicate -->
+  <div id="error-banner"></div>
 
   <div id="toolbar">
     <span class="tool-label">Paint</span>
@@ -254,26 +217,26 @@ h1 {
 <div id="flash"></div>
 
 <script>
-// ── Injected by Python ────────────────────────────────────────────────────────
-var SPRITE_SRC   = "__SPRITE_B64__";
-var SPRITE_W     = __SPRITE_W__;
-var SPRITE_H     = __SPRITE_H__;
-var RETURN_URL   = "__RETURN_URL__";
-
-// FIX: wrap AUTO_REGIONS parsing in try/catch so a malformed JSON blob
-// doesn't silently kill all subsequent JavaScript and break all interaction.
-var AUTO_REGIONS = null;
-try {
-  AUTO_REGIONS = __AUTO_REGIONS__;
-} catch(e) {
-  showError('Auto-region data could not be parsed: ' + e.message + '. Manual painting still works.');
-}
-
-// ── Error display ─────────────────────────────────────────────────────────────
+// ── showError must be defined first — before any code that might call it ──────
 function showError(msg) {
   var el = document.getElementById('error-banner');
   if (el) { el.textContent = '⚠ ' + msg; el.style.display = 'block'; }
   console.error('[RegionPainter]', msg);
+}
+
+// ── Injected by Python ────────────────────────────────────────────────────────
+var SPRITE_SRC = "__SPRITE_B64__";
+var SPRITE_W   = __SPRITE_W__;
+var SPRITE_H   = __SPRITE_H__;
+var RETURN_URL = "__RETURN_URL__";
+
+// AUTO_REGIONS is raw JSON injected by Python. Parse defensively.
+// showError is defined above so the catch can safely call it.
+var AUTO_REGIONS = null;
+try {
+  AUTO_REGIONS = __AUTO_REGIONS__;
+} catch (e) {
+  showError('Auto-region data could not be parsed: ' + e.message + '. Manual painting still works.');
 }
 
 // ── Region constants ──────────────────────────────────────────────────────────
@@ -286,9 +249,6 @@ var REGION_RGBA = {
 };
 
 // ── State ─────────────────────────────────────────────────────────────────────
-// FIX: use a plain Array instead of Int8Array for regionMap so that after
-// undo() pops a saved slice, reassignment stays consistent regardless of
-// typed-array coercion edge cases across browsers.
 var regionMap    = new Array(SPRITE_W * SPRITE_H).fill(-1);
 var history      = [];
 var activeRegion = 'head';
@@ -301,19 +261,12 @@ var cv  = document.getElementById('canvas');
 var ctx = cv.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
-// FIX: clamp scale so the canvas never exceeds the viewport.
-// MAX_DISPLAY accounts for the 32px of canvas-wrap padding (16px each side)
-// and the 32px of body padding on each side, leaving ~420px safe on a 520px app.
 var MAX_DISPLAY  = Math.min(440, window.innerWidth - 64);
 var CANVAS_SCALE = Math.max(4, Math.min(16, Math.floor(MAX_DISPLAY / Math.max(SPRITE_W, SPRITE_H))));
 var CW = SPRITE_W * CANVAS_SCALE;
 var CH = SPRITE_H * CANVAS_SCALE;
-cv.width  = CW;   // internal resolution
+cv.width  = CW;
 cv.height = CH;
-// FIX: set CSS size equal to internal resolution (1:1); CSS max-width:100%
-// on the canvas element handles responsive shrinking. This means
-// getBoundingClientRect().width may be < CW on narrow screens, and we MUST
-// account for that in pixelAt() — see the scaleX/scaleY fix below.
 cv.style.width  = CW + 'px';
 cv.style.height = CH + 'px';
 
@@ -331,7 +284,7 @@ spriteImg.onload = function() {
           }
         }
       }
-    } catch(e) {
+    } catch (e) {
       showError('Could not apply auto-regions: ' + e.message);
     }
   }
@@ -339,7 +292,7 @@ spriteImg.onload = function() {
   updateStatus();
 };
 spriteImg.onerror = function() {
-  showError('Sprite image failed to load. Try re-uploading your sprite in the main app.');
+  showError('Sprite image failed to load. Try re-uploading your sprite.');
 };
 spriteImg.src = SPRITE_SRC;
 
@@ -359,7 +312,6 @@ function redraw() {
       ctx.fillRect(x * S, y * S, S, S);
     }
   }
-  // pixel grid
   ctx.strokeStyle = 'rgba(255,255,255,0.08)';
   ctx.lineWidth = 0.5;
   for (var gx = 0; gx <= SPRITE_W; gx++) {
@@ -371,21 +323,15 @@ function redraw() {
 }
 
 // ── Coordinate helper ─────────────────────────────────────────────────────────
-// FIX: getBoundingClientRect() returns the *rendered* (CSS) size, which can
-// differ from the canvas's internal resolution (cv.width / cv.height) when the
-// browser scales it via CSS max-width:100% on narrow viewports.
-// We must map from rendered pixels → internal pixels → sprite pixels.
+// getBoundingClientRect() gives the CSS (rendered) size; cv.width/height is
+// the internal resolution. They differ when max-width:100% shrinks the canvas.
+// We correct for that here so clicks land on the right pixel.
 function pixelAt(clientX, clientY) {
   var r      = cv.getBoundingClientRect();
-  // Scale factors: rendered px → canvas internal px
   var scaleX = cv.width  / r.width;
   var scaleY = cv.height / r.height;
-  // Canvas internal coordinates
-  var canvasX = (clientX - r.left) * scaleX;
-  var canvasY = (clientY - r.top)  * scaleY;
-  // Sprite pixel coordinates
-  var sx = Math.floor(canvasX / CANVAS_SCALE);
-  var sy = Math.floor(canvasY / CANVAS_SCALE);
+  var sx = Math.floor((clientX - r.left) * scaleX / CANVAS_SCALE);
+  var sy = Math.floor((clientY - r.top)  * scaleY / CANVAS_SCALE);
   return [
     Math.max(0, Math.min(SPRITE_W - 1, sx)),
     Math.max(0, Math.min(SPRITE_H - 1, sy)),
@@ -408,62 +354,46 @@ function paint(px, py) {
   updateStatus();
 }
 
-// FIX: snapshot now copies into a plain Array (not Int8Array) to avoid
-// the issue where popping from history and reassigning could lose the -1 values
-// if the browser's Int8Array slice() behaves unexpectedly.
 function snapshot() {
   history.push(regionMap.slice());
   if (history.length > 50) history.shift();
   document.getElementById('undo-btn').disabled = false;
 }
 
-// ── Mouse events ──────────────────────────────────────────────────────────────
-// FIX: removed e.preventDefault() from mousemove/mouseup (only needed on
-// mousedown to stop text selection). Adding {passive: false} only where needed.
+// ── Mouse ─────────────────────────────────────────────────────────────────────
 cv.addEventListener('mousedown', function(e) {
-  // Only paint on left button (button === 0)
   if (e.button !== 0) return;
-  e.preventDefault();   // prevent text selection drag — needed here only
+  e.preventDefault();
   snapshot();
   painting = true;
   var p = pixelAt(e.clientX, e.clientY);
   paint(p[0], p[1]);
 });
 
-// FIX: listen on window so dragging outside canvas still registers
 window.addEventListener('mousemove', function(e) {
   if (!painting) return;
   var p = pixelAt(e.clientX, e.clientY);
   paint(p[0], p[1]);
 });
 
-window.addEventListener('mouseup', function(e) {
-  painting = false;
-});
+window.addEventListener('mouseup', function() { painting = false; });
 
-// ── Touch events ──────────────────────────────────────────────────────────────
-// FIX: touch-action: none on #canvas (CSS) prevents browser scroll from
-// consuming the touch before our listener sees it. {passive:false} is still
-// needed here to call preventDefault() and block scroll-while-painting.
+// ── Touch ─────────────────────────────────────────────────────────────────────
 cv.addEventListener('touchstart', function(e) {
   e.preventDefault();
   snapshot();
   painting = true;
-  var t = e.touches[0];
-  var p = pixelAt(t.clientX, t.clientY);
+  var p = pixelAt(e.touches[0].clientX, e.touches[0].clientY);
   paint(p[0], p[1]);
 }, { passive: false });
 
 cv.addEventListener('touchmove', function(e) {
   e.preventDefault();
-  var t = e.touches[0];
-  var p = pixelAt(t.clientX, t.clientY);
+  var p = pixelAt(e.touches[0].clientX, e.touches[0].clientY);
   paint(p[0], p[1]);
 }, { passive: false });
 
-cv.addEventListener('touchend', function(e) {
-  painting = false;
-});
+cv.addEventListener('touchend', function() { painting = false; });
 
 // ── Controls ──────────────────────────────────────────────────────────────────
 function setRegion(r) {
@@ -482,7 +412,6 @@ function setSize(s) {
 
 function undo() {
   if (!history.length) return;
-  // FIX: ensure the restored map is always a plain Array
   regionMap = Array.from(history.pop());
   redraw();
   updateStatus();
@@ -512,42 +441,30 @@ function applyAutoDetect() {
 // ── Status ────────────────────────────────────────────────────────────────────
 function updateStatus() {
   var painted = 0;
-  for (var i = 0; i < regionMap.length; i++) {
-    if (regionMap[i] >= 0) painted++;
-  }
+  for (var i = 0; i < regionMap.length; i++) if (regionMap[i] >= 0) painted++;
   document.getElementById('cov-text').textContent =
     'painted: ' + painted + ' / ' + regionMap.length + ' px';
 }
 
 // ── Submit ────────────────────────────────────────────────────────────────────
-// FIX: instead of form.submit() (which navigates away and may fail on cloud
-// deployments where localhost:8501 is unreachable), we build the URL manually
-// and use window.open() to send the regions back to Streamlit in a new load
-// of the MAIN tab. This keeps this painter tab open so the user can see the
-// success message, and sends the data correctly even behind reverse proxies.
 function submitRegions() {
   try {
-    // Pack: 4-byte header (W_hi, W_lo, H_hi, H_lo) + 1 byte per pixel (value+1)
     var packed = new Uint8Array(4 + regionMap.length);
     packed[0] = (SPRITE_W >> 8) & 0xff;
     packed[1] =  SPRITE_W       & 0xff;
     packed[2] = (SPRITE_H >> 8) & 0xff;
     packed[3] =  SPRITE_H       & 0xff;
     for (var i = 0; i < regionMap.length; i++) {
-      // regionMap values: -1 (erase/none), 0,1,2,3 (regions)
-      // packed as: -1→0, 0→1, 1→2, 2→3, 3→4
-      packed[i + 4] = ((regionMap[i] + 1) & 0xff);
+      packed[i + 4] = (regionMap[i] + 1) & 0xff;
     }
 
-    // btoa requires a binary string — build it from the Uint8Array
     var binary = '';
-    var chunk  = 8192;   // avoid call-stack overflow on very large sprites
+    var chunk  = 8192;
     for (var j = 0; j < packed.length; j += chunk) {
       binary += String.fromCharCode.apply(null, packed.subarray(j, j + chunk));
     }
     var b64 = btoa(binary);
 
-    // Flash feedback
     var flash = document.getElementById('flash');
     flash.classList.add('show');
     setTimeout(function() { flash.classList.remove('show'); }, 400);
@@ -557,33 +474,26 @@ function submitRegions() {
     btn.classList.add('success');
     btn.disabled = true;
 
-    // FIX: navigate the PARENT / OPENER window back to Streamlit with the
-    // regions query param so this painter tab stays visible (success message).
-    // Falls back to navigating this tab if opener is not accessible.
     var targetUrl = RETURN_URL + '?regions=' + encodeURIComponent(b64);
     setTimeout(function() {
       try {
         if (window.opener && !window.opener.closed) {
           window.opener.location.href = targetUrl;
         } else {
-          // No opener (e.g. user opened via address bar copy-paste);
-          // open Streamlit in a new tab so they can still see the painter result.
           window.open(targetUrl, '_blank');
         }
-      } catch(e) {
-        // Cross-origin opener: fall back to navigating this tab
+      } catch (e) {
         window.location.href = targetUrl;
       }
     }, 350);
 
-  } catch(e) {
+  } catch (e) {
     showError('Failed to encode regions: ' + e.message);
   }
 }
 
-// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+// ── Keyboard ──────────────────────────────────────────────────────────────────
 document.addEventListener('keydown', function(e) {
-  // Don't intercept when focus is on an input/button
   if (e.target && e.target.tagName === 'INPUT') return;
   if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); return; }
   if (e.metaKey && e.key === 'z') { e.preventDefault(); undo(); return; }
