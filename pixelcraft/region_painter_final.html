@@ -169,7 +169,6 @@ h1 {
 <p class="subtitle">paint zones → click Apply → close this tab</p>
 
 <div id="app">
-  <!-- Single id, no duplicate -->
   <div id="error-banner"></div>
 
   <div id="toolbar">
@@ -217,27 +216,20 @@ h1 {
 <div id="flash"></div>
 
 <script>
-// ── showError must be defined first — before any code that might call it ──────
+// ── showError defined first so it's available to all code below ───────────────
 function showError(msg) {
   var el = document.getElementById('error-banner');
   if (el) { el.textContent = '⚠ ' + msg; el.style.display = 'block'; }
   console.error('[RegionPainter]', msg);
 }
 
-// ── Injected by Python ────────────────────────────────────────────────────────
-var SPRITE_SRC = "__SPRITE_B64__"; 
-document.addEventListener('DOMContentLoaded', function() {
-  var dbg = document.createElement('div');
-  dbg.style ='background:#ff0;color:#000;padding:6px;font-size:11px;word-break:break-all;';
-  dbg.textContent = 'SRC[:40]=' +SPRITE_SRC.substring(0,40) + ' | painted=' + regionMap.filter(function(v){return v>=0;}).length;
-  document.body.prepend(dbg); 
-});
+// ── Injected by Python (placeholders replaced by write_painter_static) ────────
+var SPRITE_SRC = "__SPRITE_B64__";
 var SPRITE_W   = __SPRITE_W__;
 var SPRITE_H   = __SPRITE_H__;
 var RETURN_URL = "__RETURN_URL__";
 
-// AUTO_REGIONS is raw JSON injected by Python. Parse defensively.
-// showError is defined above so the catch can safely call it.
+// AUTO_REGIONS: raw JSON array injected by Python. Parsed defensively.
 var AUTO_REGIONS = null;
 try {
   AUTO_REGIONS = __AUTO_REGIONS__;
@@ -280,6 +272,7 @@ cv.style.height = CH + 'px';
 var spriteImg = new Image();
 spriteImg.onload = function() {
   spriteReady = true;
+  // Apply auto-detected regions as the initial paint layer.
   if (AUTO_REGIONS) {
     try {
       for (var y = 0; y < SPRITE_H; y++) {
@@ -329,6 +322,8 @@ function redraw() {
 }
 
 // ── Coordinate helper ─────────────────────────────────────────────────────────
+// getBoundingClientRect() gives CSS size; cv.width/height is internal resolution.
+// They differ when max-width:100% shrinks the canvas; we correct for that here.
 function pixelAt(clientX, clientY) {
   var r      = cv.getBoundingClientRect();
   var scaleX = cv.width  / r.width;
@@ -452,6 +447,9 @@ function updateStatus() {
 // ── Submit ────────────────────────────────────────────────────────────────────
 function submitRegions() {
   try {
+    // Pack: 4-byte header (W high, W low, H high, H low) + regionMap bytes.
+    // Each region value is stored as (value + 1) so -1 (erased) → 0,
+    // and 0–3 (HEAD/TORSO/LIMB/TUFT) → 1–4. All non-negative, fits in uint8.
     var packed = new Uint8Array(4 + regionMap.length);
     packed[0] = (SPRITE_W >> 8) & 0xff;
     packed[1] =  SPRITE_W       & 0xff;
@@ -461,6 +459,7 @@ function submitRegions() {
       packed[i + 4] = (regionMap[i] + 1) & 0xff;
     }
 
+    // Convert Uint8Array → binary string → base64.
     var binary = '';
     var chunk  = 8192;
     for (var j = 0; j < packed.length; j += chunk) {
@@ -468,6 +467,7 @@ function submitRegions() {
     }
     var b64 = btoa(binary);
 
+    // Flash feedback.
     var flash = document.getElementById('flash');
     flash.classList.add('show');
     setTimeout(function() { flash.classList.remove('show'); }, 400);
@@ -477,21 +477,28 @@ function submitRegions() {
     btn.classList.add('success');
     btn.disabled = true;
 
+    // Build the return URL with the encoded region map.
+    // RETURN_URL already has the correct host+port injected by Python.
     var targetUrl = RETURN_URL + '?regions=' + encodeURIComponent(b64);
 
-    // Try postMessage to opener first; always fall back to navigating this tab.
-    // Streamlit's app.py decodes ?regions= on the next rerun either way.
     setTimeout(function() {
-      var sent = false;
+      // Preferred path: navigate the Streamlit tab (opener) directly so it
+      // picks up ?regions= on its next rerun. Then close or navigate this tab.
+      var navigatedOpener = false;
       try {
         if (window.opener && !window.opener.closed) {
-          window.opener.postMessage({ type: 'pixelcraft_regions', url: targetUrl }, '*');
-          sent = true;
-          // Give opener 300 ms to handle the message, then navigate as fallback.
-          setTimeout(function() { window.location.href = targetUrl; }, 300);
+          window.opener.location.href = targetUrl;
+          navigatedOpener = true;
+          // Give the opener a moment to start loading, then close painter tab.
+          setTimeout(function() { window.close(); }, 600);
         }
-      } catch (e) { /* opener blocked — fall through */ }
-      if (!sent) {
+      } catch (e) {
+        // Cross-origin or popup-blocker prevented access to opener.
+      }
+
+      if (!navigatedOpener) {
+        // Fallback: navigate this tab to the Streamlit URL with the regions param.
+        // The user will land on the main app with regions applied.
         window.location.href = targetUrl;
       }
     }, 350);
@@ -501,11 +508,10 @@ function submitRegions() {
   }
 }
 
-// ── Keyboard ──────────────────────────────────────────────────────────────────
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
 document.addEventListener('keydown', function(e) {
   if (e.target && e.target.tagName === 'INPUT') return;
-  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); return; }
-  if (e.metaKey && e.key === 'z') { e.preventDefault(); undo(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); return; }
   var map = { h: 'head', t: 'torso', l: 'limb', u: 'tuft', e: 'erase' };
   if (map[e.key]) setRegion(map[e.key]);
   if (e.key === '1') setSize(1);

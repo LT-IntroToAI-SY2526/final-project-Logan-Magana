@@ -151,6 +151,8 @@ def write_painter_static(sprite: Image.Image, img_bytes: bytes, return_url: str)
     """
     Inject sprite data into the cached painter template and write to ./static/painter.html.
     Template reading is cached; only the string replacements + disk write happen per call.
+    Raises RuntimeError if any placeholder is still present after replacement (template
+    mismatch guard — catches renames or copy/paste errors immediately).
     """
     from voxelizer import _resize
     static_dir = Path(__file__).parent / "static"
@@ -166,6 +168,18 @@ def write_painter_static(sprite: Image.Image, img_bytes: bytes, return_url: str)
     html = html.replace("__SPRITE_W__",     str(small.width))
     html = html.replace("__SPRITE_H__",     str(small.height))
     html = html.replace("__RETURN_URL__",   return_url)
+
+    # Sanity-check: all placeholders must have been consumed.  If any remain,
+    # the template file doesn't match what this code expects — fail loudly
+    # rather than silently serving a broken painter.
+    for placeholder in ("__SPRITE_B64__", "__AUTO_REGIONS__",
+                        "__SPRITE_W__", "__SPRITE_H__", "__RETURN_URL__"):
+        if placeholder in html:
+            raise RuntimeError(
+                f"Template injection failed: {placeholder!r} still present in "
+                f"region_painter_final.html after replacement. "
+                f"Ensure the template contains the exact placeholder string."
+            )
 
     (static_dir / "painter.html").write_text(html, encoding="utf-8")
 
@@ -301,8 +315,13 @@ if uploaded:
     except Exception:
         base_url = "http://localhost:8501"
 
+    # Write the painter with the current sprite injected.
     write_painter_static(sprite, img_bytes, return_url=base_url)
-    painter_url = base_url + "/app/static/painter.html"
+
+    # Cache-bust with the sprite hash so the browser always fetches the
+    # freshly-written file for this sprite, not a stale cached version.
+    # This is the fix for the "banner didn't show / stale painter" symptom.
+    painter_url = base_url + "/app/static/painter.html?v=" + sprite_id[:12]
 
     st.markdown(f"""
     <div style="margin:0.5rem 0 0.75rem 0;">
