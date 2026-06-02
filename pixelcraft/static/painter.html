@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PixelCraft — Region Painter</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=DM+Sans:wght@300;400;500&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: #0d0d14;
+  background-image: radial-gradient(ellipse at 20% 10%, #1a0a2e 0%, transparent 50%),
+                    radial-gradient(ellipse at 80% 90%, #0a1a2e 0%, transparent 50%);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 16px;
+  user-select: none;
+}
+
+:root {
+  --head:  #f97316;
+  --torso: #3b82f6;
+  --limb:  #22c55e;
+  --tuft:  #a855f7;
+}
+
+h1 {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 0.9rem;
+  color: #fff;
+  text-shadow: 0 0 20px #a78bfa88;
+  margin-bottom: 4px;
+  letter-spacing: 0.05em;
+}
+.subtitle {
+  font-size: 0.8rem;
+  color: #6b6b8a;
+  margin-bottom: 20px;
+}
+
+#app {
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Toolbar ── */
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  background: #16161f;
+  border: 1px solid #2a2a3d;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.tool-label {
+  font-size: 9px; font-weight: 700; color: #6b6b8a;
+  letter-spacing: 0.1em; text-transform: uppercase;
+}
+.brush-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 10px; border-radius: 7px; border: 2px solid transparent;
+  cursor: pointer; font-size: 11px; font-weight: 700;
+  background: #1e1e2e; color: #aaa; transition: all 0.12s;
+  font-family: 'DM Sans', sans-serif;
+}
+.brush-btn:hover { filter: brightness(1.2); }
+.brush-btn.active { color: #fff; }
+.brush-btn[data-region="head"]  { border-color: var(--head);  }
+.brush-btn[data-region="torso"] { border-color: var(--torso); }
+.brush-btn[data-region="limb"]  { border-color: var(--limb);  }
+.brush-btn[data-region="tuft"]  { border-color: var(--tuft);  }
+.brush-btn[data-region="erase"] { border-color: #555;         }
+.brush-btn.active[data-region="head"]  { background: var(--head);  }
+.brush-btn.active[data-region="torso"] { background: var(--torso); }
+.brush-btn.active[data-region="limb"]  { background: var(--limb);  }
+.brush-btn.active[data-region="tuft"]  { background: var(--tuft);  }
+.brush-btn.active[data-region="erase"] { background: #555;         }
+.dot { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+.dot-head  { background: var(--head);  }
+.dot-torso { background: var(--torso); }
+.dot-limb  { background: var(--limb);  }
+.dot-tuft  { background: var(--tuft);  }
+.dot-erase { background: #666; }
+.sep { width: 1px; height: 24px; background: #2a2a3d; flex-shrink: 0; }
+#size-btns { display: flex; gap: 3px; }
+.size-btn {
+  width: 26px; height: 26px; border-radius: 6px; border: 1.5px solid #3d3d5c;
+  background: #1e1e2e; color: #888; font-size: 11px; font-weight: 700;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  font-family: 'DM Sans', sans-serif; transition: all 0.12s;
+}
+.size-btn.active, .size-btn:hover { border-color: #a78bfa; color: #a78bfa; background: #2a1a4e; }
+.icon-btn {
+  width: 28px; height: 28px; border-radius: 6px; border: 1.5px solid #3d3d5c;
+  background: #1e1e2e; color: #888; font-size: 13px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: all 0.12s;
+}
+.icon-btn:hover { border-color: #a78bfa; color: #a78bfa; }
+.icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* ── Canvas ── */
+#canvas-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: #0d0d14;
+  border-radius: 12px;
+  border: 1px solid #2a2a3d;
+  padding: 16px;
+  /* checkered bg to show transparency */
+  background-image:
+    linear-gradient(45deg, #1a1a28 25%, transparent 25%),
+    linear-gradient(-45deg, #1a1a28 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1a1a28 75%),
+    linear-gradient(-45deg, transparent 75%, #1a1a28 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  background-color: #13131e;
+}
+#canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  cursor: crosshair;
+  display: block;
+  /* hard drop shadow so sprite is visible against any bg */
+  filter: drop-shadow(0 0 8px rgba(167,139,250,0.2));
+}
+
+/* ── Legend ── */
+#legend {
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  padding: 8px 12px; background: #16161f; border-radius: 10px;
+  border: 1px solid #2a2a3d;
+}
+.legend-item {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10px; font-weight: 600; color: #8b8ba0;
+}
+.legend-swatch { width: 12px; height: 12px; border-radius: 3px; }
+
+/* ── Status + submit ── */
+#status-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 10px; color: #5a5a7a;
+}
+#submit-btn {
+  padding: 10px 22px;
+  background: linear-gradient(135deg, #7c3aed, #a78bfa);
+  color: #fff; border: none; border-radius: 9px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.04em;
+  cursor: pointer; box-shadow: 0 4px 16px #7c3aed55;
+  font-family: 'DM Sans', sans-serif;
+  transition: opacity 0.15s, transform 0.1s;
+}
+#submit-btn:hover { opacity: 0.88; transform: translateY(-1px); }
+#submit-btn.success {
+  background: linear-gradient(135deg, #059669, #34d399);
+  cursor: default;
+}
+#auto-btn {
+  padding: 8px 13px; background: #1e1e2e; border: 1.5px solid #3d3d5c;
+  color: #a78bfa; border-radius: 8px; font-size: 11px; font-weight: 700;
+  cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all 0.15s;
+}
+#auto-btn:hover { border-color: #a78bfa; background: #2a1a4e; }
+
+/* ── Shortcut hint ── */
+#shortcuts {
+  font-size: 9px; color: #3d3d5c; text-align: center; letter-spacing: 0.04em;
+}
+
+/* ── Flash ── */
+#flash {
+  position: fixed; inset: 0; pointer-events: none;
+  background: rgba(124,58,237,0.15); opacity: 0;
+  transition: opacity 0.35s; border-radius: 0; z-index: 999;
+}
+#flash.show { opacity: 1; }
+
+/* hidden submit form */
+#submit-form { display: none; }
+</style>
+</head>
+<body>
+
+<h1>REGION PAINTER</h1>
+<p class="subtitle">paint zones → click Apply → close this tab</p>
+
+<div id="app">
+  <div id="toolbar">
+    <span class="tool-label">Paint</span>
+    <button class="brush-btn active" data-region="head"  onclick="setRegion('head')"><span class="dot dot-head"></span>Head</button>
+    <button class="brush-btn"        data-region="torso" onclick="setRegion('torso')"><span class="dot dot-torso"></span>Torso</button>
+    <button class="brush-btn"        data-region="limb"  onclick="setRegion('limb')"><span class="dot dot-limb"></span>Limbs</button>
+    <button class="brush-btn"        data-region="tuft"  onclick="setRegion('tuft')"><span class="dot dot-tuft"></span>Tuft</button>
+    <button class="brush-btn"        data-region="erase" onclick="setRegion('erase')"><span class="dot dot-erase"></span>Erase</button>
+    <div class="sep"></div>
+    <span class="tool-label">Size</span>
+    <div id="size-btns">
+      <button class="size-btn active" data-sz="1" onclick="setSize(1)">1</button>
+      <button class="size-btn"        data-sz="2" onclick="setSize(2)">2</button>
+      <button class="size-btn"        data-sz="3" onclick="setSize(3)">3</button>
+    </div>
+    <div class="sep"></div>
+    <button class="icon-btn" id="undo-btn"  onclick="undo()"     title="Undo (Ctrl+Z)" disabled>↩</button>
+    <button class="icon-btn" id="clear-btn" onclick="clearAll()" title="Clear all">✕</button>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <div id="legend">
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--head)"></span>HEAD — deepest</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--torso)"></span>TORSO</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--limb)"></span>LIMBS</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--tuft)"></span>TUFT — shallowest</span>
+    <span class="legend-item" style="margin-left:auto;color:#3d3d5c;">unpainted = auto</span>
+  </div>
+
+  <div id="status-bar">
+    <span id="cov-text">painted: 0 px</span>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button id="auto-btn" onclick="applyAutoDetect()">⟳ Reset to auto</button>
+      <button id="submit-btn" onclick="submitRegions()">Apply regions →</button>
+    </div>
+  </div>
+
+  <div id="shortcuts">H=head · T=torso · L=limbs · U=tuft · E=erase · 1/2/3=brush · Ctrl+Z=undo</div>
+</div>
+
+<form id="submit-form" method="GET">
+  <input type="hidden" id="regions-input" name="regions">
+</form>
+
+<div id="flash"></div>
+
+<script>
+// ── Injected by Python ────────────────────────────────────────────────────────
+var SPRITE_SRC   = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACRklEQVR4nO2bv0oDQRDGZ4cDGxOxCBIQEhCJIMEXECt7G1tfQEvBhxAs9QVsbexTSV5ARPAQIQEhSArxYmOlGLMhN9n7v3t3cfYH4chdZjbwfTe7t7sHYLFYOCPybrCy1vhWnR+99XP/L78gMEfkrbzXO1VerzYvCnECAnOwsJZH93+fgkFgjsir2k/v/SDVKzu+WiAxXRMQmOOYrvZTRYnyg+vn8bF+tKm8PhP/bdIJCMxxtCv/sB96r0vllxrLaidIJvEyX7XdMeIEBOY4phJLZSXVdic84LyvjJ9zhmYQmCNM9/+9y+1UeZonj77vthcouwMqE+Wp4l/9z1T5ZC9BHWF7gbI5oEKUT6t4XEfodgICc4Qp5VukX3fPGrHyRsXpdgICcxzdCamCry9P4+P6xlaoE9LGZQWBOU7WBFFVXyqYlKA43b0MAnMc3QnlvZq0F0gblxUE5jimEgcpVz8+VJ4fXN2ExpkCgTkiawI5IoxSLu7MDp1JosgaYZ8Fyjof4EY4YWWvpjz/cTfMVXkJAnOE6TnBtFWdjgfsnOCi1ACP7AChq71xCcpja0BZxwFe1Po/WSHqHqyOj7u37+BbUwxsyL9/wI4DyjIn6KVUnlKUExCYI0ztCJlZ1/cpX2tVlXmGrqd0goyn+W0NKOs4oEuqe5TyUU6g+ew4YFGeBdyMMzv2WeC/7RR1E64N5rVrHIE5jukGaH+e4PdGd4hKEJgjdCec2zFKkE6Qyib9vW4QmCPK8nZYUW+TocnkFovFAiXnBzWrJ1mIqE5lAAAAAElFTkSuQmCC";
+var AUTO_REGIONS = [[null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 3, 3, 3, 3, 3, 3, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 3, 3, 3, 3, 3, 3, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, null, null, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, null, null, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, 2, 2, 2, 2, 2, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]];
+var SPRITE_W     = 64;
+var SPRITE_H     = 64;
+var RETURN_URL   = "http://localhost:8501";   // Streamlit app URL to POST regions back to
+
+// ── Region constants ──────────────────────────────────────────────────────────
+var CODE = { head:0, torso:1, limb:2, tuft:3, erase:-1 };
+var REGION_RGBA = {
+  0: 'rgba(249,115, 22,0.55)',
+  1: 'rgba( 59,130,246,0.55)',
+  2: 'rgba( 34,197, 94,0.55)',
+  3: 'rgba(168, 85,247,0.55)',
+};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+var regionMap    = new Int8Array(SPRITE_W * SPRITE_H).fill(-1);
+var history      = [];
+var activeRegion = 'head';
+var brushSize    = 1;
+var painting     = false;
+var spriteReady  = false;
+
+// ── Canvas setup ──────────────────────────────────────────────────────────────
+var cv  = document.getElementById('canvas');
+var ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+var MAX_DISPLAY  = 440;
+var CANVAS_SCALE = Math.max(4, Math.min(16, Math.floor(MAX_DISPLAY / Math.max(SPRITE_W, SPRITE_H))));
+var CW = SPRITE_W * CANVAS_SCALE;
+var CH = SPRITE_H * CANVAS_SCALE;
+cv.width  = CW;
+cv.height = CH;
+cv.style.width  = CW + 'px';
+cv.style.height = CH + 'px';
+
+// ── Load sprite ───────────────────────────────────────────────────────────────
+var spriteImg = new Image();
+spriteImg.onload = function() {
+  spriteReady = true;
+  if (AUTO_REGIONS) {
+    for (var y = 0; y < SPRITE_H; y++)
+      for (var x = 0; x < SPRITE_W; x++) {
+        var v = AUTO_REGIONS[y][x];
+        if (v !== null && v >= 0) regionMap[y * SPRITE_W + x] = v;
+      }
+  }
+  redraw();
+  updateStatus();
+};
+spriteImg.src = SPRITE_SRC;
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function redraw() {
+  ctx.clearRect(0, 0, CW, CH);
+  if (spriteReady) {
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(spriteImg, 0, 0, CW, CH);
+  }
+  var S = CANVAS_SCALE;
+  for (var y = 0; y < SPRITE_H; y++)
+    for (var x = 0; x < SPRITE_W; x++) {
+      var v = regionMap[y * SPRITE_W + x];
+      if (v < 0) continue;
+      ctx.fillStyle = REGION_RGBA[v] || 'rgba(255,255,255,0.4)';
+      ctx.fillRect(x * S, y * S, S, S);
+    }
+  // grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 0.5;
+  for (var gx = 0; gx <= SPRITE_W; gx++) {
+    ctx.beginPath(); ctx.moveTo(gx*S, 0); ctx.lineTo(gx*S, CH); ctx.stroke();
+  }
+  for (var gy = 0; gy <= SPRITE_H; gy++) {
+    ctx.beginPath(); ctx.moveTo(0, gy*S); ctx.lineTo(CW, gy*S); ctx.stroke();
+  }
+}
+
+// ── Coordinate helper ─────────────────────────────────────────────────────────
+function pixelAt(clientX, clientY) {
+  var r  = cv.getBoundingClientRect();
+  var sx = Math.floor((clientX - r.left) / r.width  * SPRITE_W);
+  var sy = Math.floor((clientY - r.top)  / r.height * SPRITE_H);
+  return [Math.max(0, Math.min(SPRITE_W-1, sx)),
+          Math.max(0, Math.min(SPRITE_H-1, sy))];
+}
+
+// ── Paint ─────────────────────────────────────────────────────────────────────
+function paint(px, py) {
+  var code = activeRegion === 'erase' ? -1 : CODE[activeRegion];
+  var half = Math.floor(brushSize / 2);
+  for (var dy = -half; dy <= half; dy++)
+    for (var dx = -half; dx <= half; dx++) {
+      var nx = px+dx, ny = py+dy;
+      if (nx >= 0 && nx < SPRITE_W && ny >= 0 && ny < SPRITE_H)
+        regionMap[ny * SPRITE_W + nx] = code;
+    }
+  redraw();
+  updateStatus();
+}
+
+function snapshot() {
+  history.push(regionMap.slice());
+  if (history.length > 50) history.shift();
+  document.getElementById('undo-btn').disabled = false;
+}
+
+// ── Mouse ─────────────────────────────────────────────────────────────────────
+cv.addEventListener('mousedown', function(e) {
+  e.preventDefault();
+  snapshot();
+  painting = true;
+  var p = pixelAt(e.clientX, e.clientY);
+  paint(p[0], p[1]);
+});
+window.addEventListener('mousemove', function(e) {
+  if (!painting) return;
+  var p = pixelAt(e.clientX, e.clientY);
+  paint(p[0], p[1]);
+});
+window.addEventListener('mouseup', function() { painting = false; });
+
+// ── Touch ─────────────────────────────────────────────────────────────────────
+cv.addEventListener('touchstart', function(e) {
+  e.preventDefault();
+  snapshot();
+  painting = true;
+  var p = pixelAt(e.touches[0].clientX, e.touches[0].clientY);
+  paint(p[0], p[1]);
+}, { passive: false });
+cv.addEventListener('touchmove', function(e) {
+  e.preventDefault();
+  var p = pixelAt(e.touches[0].clientX, e.touches[0].clientY);
+  paint(p[0], p[1]);
+}, { passive: false });
+cv.addEventListener('touchend', function() { painting = false; });
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+function setRegion(r) {
+  activeRegion = r;
+  document.querySelectorAll('.brush-btn').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.region === r);
+  });
+}
+function setSize(s) {
+  brushSize = s;
+  document.querySelectorAll('.size-btn').forEach(function(b) {
+    b.classList.toggle('active', parseInt(b.dataset.sz) === s);
+  });
+}
+function undo() {
+  if (!history.length) return;
+  regionMap = history.pop();
+  redraw(); updateStatus();
+  document.getElementById('undo-btn').disabled = history.length === 0;
+}
+function clearAll() {
+  snapshot();
+  regionMap.fill(-1);
+  redraw(); updateStatus();
+}
+function applyAutoDetect() {
+  if (!AUTO_REGIONS) return;
+  snapshot();
+  for (var y = 0; y < SPRITE_H; y++)
+    for (var x = 0; x < SPRITE_W; x++) {
+      var v = AUTO_REGIONS[y][x];
+      regionMap[y * SPRITE_W + x] = (v !== null && v >= 0) ? v : -1;
+    }
+  redraw(); updateStatus();
+}
+
+// ── Status ────────────────────────────────────────────────────────────────────
+function updateStatus() {
+  var painted = 0;
+  for (var i = 0; i < regionMap.length; i++) if (regionMap[i] >= 0) painted++;
+  document.getElementById('cov-text').textContent =
+    'painted: ' + painted + ' / ' + regionMap.length + ' px';
+}
+
+// ── Submit → back to Streamlit via URL query param ───────────────────────────
+// Encodes the region map as base64 and does a GET to RETURN_URL?regions=<b64>
+// Since this page is NOT inside an iframe, form submission works perfectly.
+function submitRegions() {
+  // Pack: 4-byte header (W hi, W lo, H hi, H lo) + 1 byte per pixel (value+1)
+  var packed = new Uint8Array(4 + regionMap.length);
+  packed[0] = (SPRITE_W >> 8) & 0xff;
+  packed[1] =  SPRITE_W       & 0xff;
+  packed[2] = (SPRITE_H >> 8) & 0xff;
+  packed[3] =  SPRITE_H       & 0xff;
+  for (var i = 0; i < regionMap.length; i++)
+    packed[i + 4] = (regionMap[i] + 1) & 0xff;  // -1→0, 0→1, 1→2, 2→3, 3→4
+
+  var binary = '';
+  for (var j = 0; j < packed.length; j++) binary += String.fromCharCode(packed[j]);
+  var b64 = btoa(binary);
+
+  // Flash + button feedback
+  var flash = document.getElementById('flash');
+  flash.classList.add('show');
+  setTimeout(function() { flash.classList.remove('show'); }, 400);
+
+  var btn = document.getElementById('submit-btn');
+  btn.textContent = '✓ Applied! You can close this tab.';
+  btn.classList.add('success');
+
+  // Submit form to Streamlit app URL
+  var form = document.getElementById('submit-form');
+  form.action = RETURN_URL;
+  document.getElementById('regions-input').value = b64;
+  setTimeout(function() { form.submit(); }, 300);
+}
+
+// ── Keyboard ──────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey && e.key === 'z') { undo(); return; }
+  var map = { h:'head', t:'torso', l:'limb', u:'tuft', e:'erase' };
+  if (map[e.key]) setRegion(map[e.key]);
+  if (e.key === '1') setSize(1);
+  if (e.key === '2') setSize(2);
+  if (e.key === '3') setSize(3);
+});
+</script>
+</body>
+</html>
