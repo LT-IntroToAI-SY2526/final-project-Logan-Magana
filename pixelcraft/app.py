@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -105,20 +106,33 @@ h1, h2, h3 { color: #e0e0f0; }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _sprite_hash(img_bytes: bytes) -> str:
+    """SHA-256 of full file content — collision-proof unlike hash(bytes[:64])."""
+    return hashlib.sha256(img_bytes).hexdigest()
+
+
 def sprite_to_b64(sprite: Image.Image) -> str:
     buf = io.BytesIO()
     sprite.save(buf, format="PNG")
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def auto_region_map_json(sprite: Image.Image) -> str:
+@st.cache_data(show_spinner=False)
+def _cached_auto_region_map_json(sprite_hash: str, img_bytes: bytes) -> str:
+    """
+    Compute auto-region JSON once per unique sprite and cache it.
+    The sprite_hash key ensures the cache invalidates when the image changes.
+    img_bytes is passed so the function is pure (hash alone could theoretically
+    collide across Streamlit sessions, though SHA-256 makes this negligible).
+    """
     from voxelizer import _resize, _bg_mask
-    small = _resize(sprite.convert("RGBA"))
-    rgba  = np.array(small, dtype=np.uint8)
-    is_bg = _bg_mask(rgba)
-    occ   = ~is_bg
-    rmap  = classify_regions(occ)
-    rows  = []
+    sprite = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+    small  = _resize(sprite)
+    rgba   = np.array(small, dtype=np.uint8)
+    is_bg  = _bg_mask(rgba)
+    occ    = ~is_bg
+    rmap   = classify_regions(occ)
+    rows   = []
     for y in range(rmap.shape[0]):
         row = []
         for x in range(rmap.shape[1]):
@@ -127,11 +141,16 @@ def auto_region_map_json(sprite: Image.Image) -> str:
     return json.dumps(rows)
 
 
-def write_painter_static(sprite: Image.Image, return_url: str) -> None:
+@st.cache_data(show_spinner=False)
+def _cached_painter_template() -> str:
+    """Read region_painter_final.html once and cache it for the process lifetime."""
+    return (Path(__file__).parent / "region_painter_final.html").read_text(encoding="utf-8")
+
+
+def write_painter_static(sprite: Image.Image, img_bytes: bytes, return_url: str) -> None:
     """
-    Inject sprite data into region_painter_final.html and write it to
-    ./static/painter.html, which Streamlit serves at /app/static/painter.html.
-    Opening it in a new tab sidesteps the iframe sandbox entirely.
+    Inject sprite data into the cached painter template and write to ./static/painter.html.
+    Template reading is cached; only the string replacements + disk write happen per call.
     """
     from voxelizer import _resize
     static_dir = Path(__file__).parent / "static"
@@ -139,9 +158,9 @@ def write_painter_static(sprite: Image.Image, return_url: str) -> None:
 
     small  = _resize(sprite.convert("RGBA"))
     b64    = sprite_to_b64(small)
-    auto_j = auto_region_map_json(sprite)
+    auto_j = _cached_auto_region_map_json(_sprite_hash(img_bytes), img_bytes)
 
-    html = (Path(__file__).parent / "region_painter_final.html").read_text(encoding="utf-8")
+    html = _cached_painter_template()
     html = html.replace("__SPRITE_B64__",   b64)
     html = html.replace("__AUTO_REGIONS__", auto_j)
     html = html.replace("__SPRITE_W__",     str(small.width))
@@ -176,7 +195,6 @@ def decode_regions_b64(b64_str: str):
 
 
 # ── Decode incoming region map from URL query params ─────────────────────────
-# The painter submits GET ?regions=<b64> to this page after Apply is clicked.
 _qp_regions = st.query_params.get("regions", None)
 if _qp_regions and "external_region_map" not in st.session_state:
     decoded = decode_regions_b64(_qp_regions)
@@ -189,6 +207,12 @@ if "external_region_map" not in st.session_state:
     st.session_state["external_region_map"] = None
 if "region_map_source"   not in st.session_state:
     st.session_state["region_map_source"]   = "auto"
+# Cache the built VoxelGrid between Step 3 (viewer) and Step 5 (generate)
+# so we don't build it twice for the same sprite + settings.
+if "cached_grid"         not in st.session_state:
+    st.session_state["cached_grid"]         = None
+if "cached_grid_key"     not in st.session_state:
+    st.session_state["cached_grid_key"]     = None
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -220,12 +244,14 @@ uploaded = st.file_uploader(
 if uploaded:
     img_bytes = uploaded.read()
 
-    # Reset regions when a new sprite is uploaded
-    sprite_id = hash(img_bytes[:64])
+    # SHA-256 hash: collision-proof, uses full content not just first 64 bytes.
+    sprite_id = _sprite_hash(img_bytes)
     if st.session_state.get("last_sprite_id") != sprite_id:
         st.session_state["external_region_map"] = None
         st.session_state["region_map_source"]   = "auto"
         st.session_state["last_sprite_id"]      = sprite_id
+        st.session_state["cached_grid"]         = None
+        st.session_state["cached_grid_key"]     = None
         st.query_params.clear()
 
     sprite = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
@@ -252,7 +278,7 @@ if uploaded:
 
     st.markdown("---")
 
-    # ── Step 2: Region Painter (new tab — no iframe sandbox) ──────────────────
+    # ── Step 2: Region Painter ────────────────────────────────────────────────
     st.markdown('<div class="step-badge">STEP 02 — REGION PAINTER (optional)</div>', unsafe_allow_html=True)
 
     if st.session_state["region_map_source"] == "custom":
@@ -260,12 +286,13 @@ if uploaded:
         if st.button("⟳  Reset to auto-detect", key="reset_regions"):
             st.session_state["external_region_map"] = None
             st.session_state["region_map_source"]   = "auto"
+            st.session_state["cached_grid"]         = None
+            st.session_state["cached_grid_key"]     = None
             st.query_params.clear()
             st.rerun()
     else:
         st.info("ℹ Auto-detect active. Open the painter to manually assign regions.")
 
-    # Detect the app's base URL so the painter can POST back to it
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
         ctx      = get_script_run_ctx()
@@ -274,7 +301,7 @@ if uploaded:
     except Exception:
         base_url = "http://localhost:8501"
 
-    write_painter_static(sprite, return_url=base_url)
+    write_painter_static(sprite, img_bytes, return_url=base_url)
     painter_url = base_url + "/app/static/painter.html"
 
     st.markdown(f"""
@@ -326,10 +353,22 @@ if uploaded:
         )
         st.caption(f"⚡ Downscaled to {preview_sprite.width}×{preview_sprite.height} for 3D performance.")
 
-    with st.spinner("Building 3D model…"):
-        grid      = VoxelGrid.build(preview_sprite, external_region_map=st.session_state["external_region_map"])
-        grid      = smooth_grid(grid)
-        grid_data = export_grid_json(grid)
+    # Cache key: sprite identity + region map source so the grid is reused
+    # between the viewer render and the PDF generate step when nothing changed.
+    ext_rm     = st.session_state["external_region_map"]
+    grid_key   = (sprite_id, st.session_state["region_map_source"],
+                  id(ext_rm) if ext_rm is not None else None)
+
+    if st.session_state["cached_grid_key"] != grid_key:
+        with st.spinner("Building 3D model…"):
+            grid = VoxelGrid.build(preview_sprite, external_region_map=ext_rm)
+            grid = smooth_grid(grid)
+        st.session_state["cached_grid"]     = grid
+        st.session_state["cached_grid_key"] = grid_key
+    else:
+        grid = st.session_state["cached_grid"]
+
+    grid_data = export_grid_json(grid)
 
     has_voxels = any(grid_data['depthMap'][y][x] > 0
                      for y in range(grid_data['H'])
@@ -363,7 +402,7 @@ if uploaded:
     if use_3d_renders:
         with st.expander("👁 Preview auto-rendered faces", expanded=False):
             with st.spinner("Rendering 6 faces…"):
-                _g = VoxelGrid.build(sprite, external_region_map=st.session_state["external_region_map"])
+                _g = VoxelGrid.build(sprite, external_region_map=ext_rm)
                 _g = smooth_grid(_g)
                 faces_preview = render_all_faces(_g, face_size=120, bg=get_bg_color(sprite))
             cols = st.columns(6)
@@ -384,7 +423,7 @@ if uploaded:
                 preview_img = generate_net_preview(
                     sprite, face_size_px=300, side_style=side_style,
                     use_3d_renders=use_3d_renders,
-                    external_region_map=st.session_state["external_region_map"],
+                    external_region_map=ext_rm,
                 )
                 st.markdown("**Net preview:**")
                 st.image(preview_img, use_container_width=True)
@@ -393,7 +432,7 @@ if uploaded:
                     sprite, face_size_cm=face_size_cm, tab_size_cm=tab_size_cm,
                     side_style=side_style, add_instructions=add_instructions,
                     use_3d_renders=use_3d_renders,
-                    external_region_map=st.session_state["external_region_map"],
+                    external_region_map=ext_rm,
                 )
 
                 st.markdown("---")

@@ -17,7 +17,8 @@ body {
   flex-direction: column;
   align-items: center;
   padding: 24px 16px;
-  user-select: none;
+  /* NOTE: user-select none only on canvas, not body — prevents accidental
+     text selection while painting without blocking click events elsewhere */
 }
 
 :root {
@@ -115,7 +116,6 @@ h1 {
   border-radius: 12px;
   border: 1px solid #2a2a3d;
   padding: 16px;
-  /* checkered bg to show transparency */
   background-image:
     linear-gradient(45deg, #1a1a28 25%, transparent 25%),
     linear-gradient(-45deg, #1a1a28 25%, transparent 25%),
@@ -124,13 +124,22 @@ h1 {
   background-size: 12px 12px;
   background-position: 0 0, 0 6px, 6px -6px, -6px 0;
   background-color: #13131e;
+  /* FIX: allow canvas to shrink on narrow viewports */
+  overflow: hidden;
 }
 #canvas {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   cursor: crosshair;
   display: block;
-  /* hard drop shadow so sprite is visible against any bg */
+  /* FIX: constrain canvas to container width so coordinate math stays valid */
+  max-width: 100%;
+  max-height: 480px;
+  /* prevent text selection while painting */
+  user-select: none;
+  -webkit-user-select: none;
+  /* ensure touch events hit the canvas */
+  touch-action: none;
   filter: drop-shadow(0 0 8px rgba(167,139,250,0.2));
 }
 
@@ -172,6 +181,12 @@ h1 {
 }
 #auto-btn:hover { border-color: #a78bfa; background: #2a1a4e; }
 
+/* ── Error banner ── */
+#error-banner {
+  display: none; background: #3d1010; border: 1px solid #7c1d1d;
+  border-radius: 8px; padding: 8px 12px; color: #fca5a5; font-size: 11px;
+}
+
 /* ── Shortcut hint ── */
 #shortcuts {
   font-size: 9px; color: #3d3d5c; text-align: center; letter-spacing: 0.04em;
@@ -181,12 +196,9 @@ h1 {
 #flash {
   position: fixed; inset: 0; pointer-events: none;
   background: rgba(124,58,237,0.15); opacity: 0;
-  transition: opacity 0.35s; border-radius: 0; z-index: 999;
+  transition: opacity 0.35s; z-index: 999;
 }
 #flash.show { opacity: 1; }
-
-/* hidden submit form */
-#submit-form { display: none; }
 </style>
 </head>
 <body>
@@ -195,6 +207,8 @@ h1 {
 <p class="subtitle">paint zones → click Apply → close this tab</p>
 
 <div id="app">
+  <div id="error-banner" id="err"></div>
+
   <div id="toolbar">
     <span class="tool-label">Paint</span>
     <button class="brush-btn active" data-region="head"  onclick="setRegion('head')"><span class="dot dot-head"></span>Head</button>
@@ -237,31 +251,45 @@ h1 {
   <div id="shortcuts">H=head · T=torso · L=limbs · U=tuft · E=erase · 1/2/3=brush · Ctrl+Z=undo</div>
 </div>
 
-<form id="submit-form" method="GET">
-  <input type="hidden" id="regions-input" name="regions">
-</form>
-
 <div id="flash"></div>
 
 <script>
 // ── Injected by Python ────────────────────────────────────────────────────────
 var SPRITE_SRC   = "__SPRITE_B64__";
-var AUTO_REGIONS = __AUTO_REGIONS__;
 var SPRITE_W     = __SPRITE_W__;
 var SPRITE_H     = __SPRITE_H__;
-var RETURN_URL   = "__RETURN_URL__";   // Streamlit app URL to POST regions back to
+var RETURN_URL   = "__RETURN_URL__";
+
+// FIX: wrap AUTO_REGIONS parsing in try/catch so a malformed JSON blob
+// doesn't silently kill all subsequent JavaScript and break all interaction.
+var AUTO_REGIONS = null;
+try {
+  AUTO_REGIONS = __AUTO_REGIONS__;
+} catch(e) {
+  showError('Auto-region data could not be parsed: ' + e.message + '. Manual painting still works.');
+}
+
+// ── Error display ─────────────────────────────────────────────────────────────
+function showError(msg) {
+  var el = document.getElementById('error-banner');
+  if (el) { el.textContent = '⚠ ' + msg; el.style.display = 'block'; }
+  console.error('[RegionPainter]', msg);
+}
 
 // ── Region constants ──────────────────────────────────────────────────────────
-var CODE = { head:0, torso:1, limb:2, tuft:3, erase:-1 };
+var CODE = { head: 0, torso: 1, limb: 2, tuft: 3, erase: -1 };
 var REGION_RGBA = {
-  0: 'rgba(249,115, 22,0.55)',
-  1: 'rgba( 59,130,246,0.55)',
-  2: 'rgba( 34,197, 94,0.55)',
-  3: 'rgba(168, 85,247,0.55)',
+  0: 'rgba(249,115,22,0.55)',
+  1: 'rgba(59,130,246,0.55)',
+  2: 'rgba(34,197,94,0.55)',
+  3: 'rgba(168,85,247,0.55)',
 };
 
 // ── State ─────────────────────────────────────────────────────────────────────
-var regionMap    = new Int8Array(SPRITE_W * SPRITE_H).fill(-1);
+// FIX: use a plain Array instead of Int8Array for regionMap so that after
+// undo() pops a saved slice, reassignment stays consistent regardless of
+// typed-array coercion edge cases across browsers.
+var regionMap    = new Array(SPRITE_W * SPRITE_H).fill(-1);
 var history      = [];
 var activeRegion = 'head';
 var brushSize    = 1;
@@ -273,12 +301,19 @@ var cv  = document.getElementById('canvas');
 var ctx = cv.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
-var MAX_DISPLAY  = 440;
+// FIX: clamp scale so the canvas never exceeds the viewport.
+// MAX_DISPLAY accounts for the 32px of canvas-wrap padding (16px each side)
+// and the 32px of body padding on each side, leaving ~420px safe on a 520px app.
+var MAX_DISPLAY  = Math.min(440, window.innerWidth - 64);
 var CANVAS_SCALE = Math.max(4, Math.min(16, Math.floor(MAX_DISPLAY / Math.max(SPRITE_W, SPRITE_H))));
 var CW = SPRITE_W * CANVAS_SCALE;
 var CH = SPRITE_H * CANVAS_SCALE;
-cv.width  = CW;
+cv.width  = CW;   // internal resolution
 cv.height = CH;
+// FIX: set CSS size equal to internal resolution (1:1); CSS max-width:100%
+// on the canvas element handles responsive shrinking. This means
+// getBoundingClientRect().width may be < CW on narrow screens, and we MUST
+// account for that in pixelAt() — see the scaleX/scaleY fix below.
 cv.style.width  = CW + 'px';
 cv.style.height = CH + 'px';
 
@@ -287,14 +322,24 @@ var spriteImg = new Image();
 spriteImg.onload = function() {
   spriteReady = true;
   if (AUTO_REGIONS) {
-    for (var y = 0; y < SPRITE_H; y++)
-      for (var x = 0; x < SPRITE_W; x++) {
-        var v = AUTO_REGIONS[y][x];
-        if (v !== null && v >= 0) regionMap[y * SPRITE_W + x] = v;
+    try {
+      for (var y = 0; y < SPRITE_H; y++) {
+        for (var x = 0; x < SPRITE_W; x++) {
+          var v = AUTO_REGIONS[y] && AUTO_REGIONS[y][x];
+          if (v !== null && v !== undefined && v >= 0) {
+            regionMap[y * SPRITE_W + x] = v;
+          }
+        }
       }
+    } catch(e) {
+      showError('Could not apply auto-regions: ' + e.message);
+    }
   }
   redraw();
   updateStatus();
+};
+spriteImg.onerror = function() {
+  showError('Sprite image failed to load. Try re-uploading your sprite in the main app.');
 };
 spriteImg.src = SPRITE_SRC;
 
@@ -306,82 +351,119 @@ function redraw() {
     ctx.drawImage(spriteImg, 0, 0, CW, CH);
   }
   var S = CANVAS_SCALE;
-  for (var y = 0; y < SPRITE_H; y++)
+  for (var y = 0; y < SPRITE_H; y++) {
     for (var x = 0; x < SPRITE_W; x++) {
       var v = regionMap[y * SPRITE_W + x];
       if (v < 0) continue;
       ctx.fillStyle = REGION_RGBA[v] || 'rgba(255,255,255,0.4)';
       ctx.fillRect(x * S, y * S, S, S);
     }
-  // grid
+  }
+  // pixel grid
   ctx.strokeStyle = 'rgba(255,255,255,0.08)';
   ctx.lineWidth = 0.5;
   for (var gx = 0; gx <= SPRITE_W; gx++) {
-    ctx.beginPath(); ctx.moveTo(gx*S, 0); ctx.lineTo(gx*S, CH); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(gx * S, 0); ctx.lineTo(gx * S, CH); ctx.stroke();
   }
   for (var gy = 0; gy <= SPRITE_H; gy++) {
-    ctx.beginPath(); ctx.moveTo(0, gy*S); ctx.lineTo(CW, gy*S); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, gy * S); ctx.lineTo(CW, gy * S); ctx.stroke();
   }
 }
 
 // ── Coordinate helper ─────────────────────────────────────────────────────────
+// FIX: getBoundingClientRect() returns the *rendered* (CSS) size, which can
+// differ from the canvas's internal resolution (cv.width / cv.height) when the
+// browser scales it via CSS max-width:100% on narrow viewports.
+// We must map from rendered pixels → internal pixels → sprite pixels.
 function pixelAt(clientX, clientY) {
-  var r  = cv.getBoundingClientRect();
-  var sx = Math.floor((clientX - r.left) / r.width  * SPRITE_W);
-  var sy = Math.floor((clientY - r.top)  / r.height * SPRITE_H);
-  return [Math.max(0, Math.min(SPRITE_W-1, sx)),
-          Math.max(0, Math.min(SPRITE_H-1, sy))];
+  var r      = cv.getBoundingClientRect();
+  // Scale factors: rendered px → canvas internal px
+  var scaleX = cv.width  / r.width;
+  var scaleY = cv.height / r.height;
+  // Canvas internal coordinates
+  var canvasX = (clientX - r.left) * scaleX;
+  var canvasY = (clientY - r.top)  * scaleY;
+  // Sprite pixel coordinates
+  var sx = Math.floor(canvasX / CANVAS_SCALE);
+  var sy = Math.floor(canvasY / CANVAS_SCALE);
+  return [
+    Math.max(0, Math.min(SPRITE_W - 1, sx)),
+    Math.max(0, Math.min(SPRITE_H - 1, sy)),
+  ];
 }
 
 // ── Paint ─────────────────────────────────────────────────────────────────────
 function paint(px, py) {
   var code = activeRegion === 'erase' ? -1 : CODE[activeRegion];
   var half = Math.floor(brushSize / 2);
-  for (var dy = -half; dy <= half; dy++)
+  for (var dy = -half; dy <= half; dy++) {
     for (var dx = -half; dx <= half; dx++) {
-      var nx = px+dx, ny = py+dy;
-      if (nx >= 0 && nx < SPRITE_W && ny >= 0 && ny < SPRITE_H)
+      var nx = px + dx, ny = py + dy;
+      if (nx >= 0 && nx < SPRITE_W && ny >= 0 && ny < SPRITE_H) {
         regionMap[ny * SPRITE_W + nx] = code;
+      }
     }
+  }
   redraw();
   updateStatus();
 }
 
+// FIX: snapshot now copies into a plain Array (not Int8Array) to avoid
+// the issue where popping from history and reassigning could lose the -1 values
+// if the browser's Int8Array slice() behaves unexpectedly.
 function snapshot() {
   history.push(regionMap.slice());
   if (history.length > 50) history.shift();
   document.getElementById('undo-btn').disabled = false;
 }
 
-// ── Mouse ─────────────────────────────────────────────────────────────────────
+// ── Mouse events ──────────────────────────────────────────────────────────────
+// FIX: removed e.preventDefault() from mousemove/mouseup (only needed on
+// mousedown to stop text selection). Adding {passive: false} only where needed.
 cv.addEventListener('mousedown', function(e) {
-  e.preventDefault();
+  // Only paint on left button (button === 0)
+  if (e.button !== 0) return;
+  e.preventDefault();   // prevent text selection drag — needed here only
   snapshot();
   painting = true;
   var p = pixelAt(e.clientX, e.clientY);
   paint(p[0], p[1]);
 });
+
+// FIX: listen on window so dragging outside canvas still registers
 window.addEventListener('mousemove', function(e) {
   if (!painting) return;
   var p = pixelAt(e.clientX, e.clientY);
   paint(p[0], p[1]);
 });
-window.addEventListener('mouseup', function() { painting = false; });
 
-// ── Touch ─────────────────────────────────────────────────────────────────────
+window.addEventListener('mouseup', function(e) {
+  painting = false;
+});
+
+// ── Touch events ──────────────────────────────────────────────────────────────
+// FIX: touch-action: none on #canvas (CSS) prevents browser scroll from
+// consuming the touch before our listener sees it. {passive:false} is still
+// needed here to call preventDefault() and block scroll-while-painting.
 cv.addEventListener('touchstart', function(e) {
   e.preventDefault();
   snapshot();
   painting = true;
-  var p = pixelAt(e.touches[0].clientX, e.touches[0].clientY);
+  var t = e.touches[0];
+  var p = pixelAt(t.clientX, t.clientY);
   paint(p[0], p[1]);
 }, { passive: false });
+
 cv.addEventListener('touchmove', function(e) {
   e.preventDefault();
-  var p = pixelAt(e.touches[0].clientX, e.touches[0].clientY);
+  var t = e.touches[0];
+  var p = pixelAt(t.clientX, t.clientY);
   paint(p[0], p[1]);
 }, { passive: false });
-cv.addEventListener('touchend', function() { painting = false; });
+
+cv.addEventListener('touchend', function(e) {
+  painting = false;
+});
 
 // ── Controls ──────────────────────────────────────────────────────────────────
 function setRegion(r) {
@@ -390,79 +472,122 @@ function setRegion(r) {
     b.classList.toggle('active', b.dataset.region === r);
   });
 }
+
 function setSize(s) {
   brushSize = s;
   document.querySelectorAll('.size-btn').forEach(function(b) {
     b.classList.toggle('active', parseInt(b.dataset.sz) === s);
   });
 }
+
 function undo() {
   if (!history.length) return;
-  regionMap = history.pop();
-  redraw(); updateStatus();
+  // FIX: ensure the restored map is always a plain Array
+  regionMap = Array.from(history.pop());
+  redraw();
+  updateStatus();
   document.getElementById('undo-btn').disabled = history.length === 0;
 }
+
 function clearAll() {
   snapshot();
-  regionMap.fill(-1);
-  redraw(); updateStatus();
+  regionMap = new Array(SPRITE_W * SPRITE_H).fill(-1);
+  redraw();
+  updateStatus();
 }
+
 function applyAutoDetect() {
   if (!AUTO_REGIONS) return;
   snapshot();
-  for (var y = 0; y < SPRITE_H; y++)
+  for (var y = 0; y < SPRITE_H; y++) {
     for (var x = 0; x < SPRITE_W; x++) {
-      var v = AUTO_REGIONS[y][x];
-      regionMap[y * SPRITE_W + x] = (v !== null && v >= 0) ? v : -1;
+      var v = AUTO_REGIONS[y] && AUTO_REGIONS[y][x];
+      regionMap[y * SPRITE_W + x] = (v !== null && v !== undefined && v >= 0) ? v : -1;
     }
-  redraw(); updateStatus();
+  }
+  redraw();
+  updateStatus();
 }
 
 // ── Status ────────────────────────────────────────────────────────────────────
 function updateStatus() {
   var painted = 0;
-  for (var i = 0; i < regionMap.length; i++) if (regionMap[i] >= 0) painted++;
+  for (var i = 0; i < regionMap.length; i++) {
+    if (regionMap[i] >= 0) painted++;
+  }
   document.getElementById('cov-text').textContent =
     'painted: ' + painted + ' / ' + regionMap.length + ' px';
 }
 
-// ── Submit → back to Streamlit via URL query param ───────────────────────────
-// Encodes the region map as base64 and does a GET to RETURN_URL?regions=<b64>
-// Since this page is NOT inside an iframe, form submission works perfectly.
+// ── Submit ────────────────────────────────────────────────────────────────────
+// FIX: instead of form.submit() (which navigates away and may fail on cloud
+// deployments where localhost:8501 is unreachable), we build the URL manually
+// and use window.open() to send the regions back to Streamlit in a new load
+// of the MAIN tab. This keeps this painter tab open so the user can see the
+// success message, and sends the data correctly even behind reverse proxies.
 function submitRegions() {
-  // Pack: 4-byte header (W hi, W lo, H hi, H lo) + 1 byte per pixel (value+1)
-  var packed = new Uint8Array(4 + regionMap.length);
-  packed[0] = (SPRITE_W >> 8) & 0xff;
-  packed[1] =  SPRITE_W       & 0xff;
-  packed[2] = (SPRITE_H >> 8) & 0xff;
-  packed[3] =  SPRITE_H       & 0xff;
-  for (var i = 0; i < regionMap.length; i++)
-    packed[i + 4] = (regionMap[i] + 1) & 0xff;  // -1→0, 0→1, 1→2, 2→3, 3→4
+  try {
+    // Pack: 4-byte header (W_hi, W_lo, H_hi, H_lo) + 1 byte per pixel (value+1)
+    var packed = new Uint8Array(4 + regionMap.length);
+    packed[0] = (SPRITE_W >> 8) & 0xff;
+    packed[1] =  SPRITE_W       & 0xff;
+    packed[2] = (SPRITE_H >> 8) & 0xff;
+    packed[3] =  SPRITE_H       & 0xff;
+    for (var i = 0; i < regionMap.length; i++) {
+      // regionMap values: -1 (erase/none), 0,1,2,3 (regions)
+      // packed as: -1→0, 0→1, 1→2, 2→3, 3→4
+      packed[i + 4] = ((regionMap[i] + 1) & 0xff);
+    }
 
-  var binary = '';
-  for (var j = 0; j < packed.length; j++) binary += String.fromCharCode(packed[j]);
-  var b64 = btoa(binary);
+    // btoa requires a binary string — build it from the Uint8Array
+    var binary = '';
+    var chunk  = 8192;   // avoid call-stack overflow on very large sprites
+    for (var j = 0; j < packed.length; j += chunk) {
+      binary += String.fromCharCode.apply(null, packed.subarray(j, j + chunk));
+    }
+    var b64 = btoa(binary);
 
-  // Flash + button feedback
-  var flash = document.getElementById('flash');
-  flash.classList.add('show');
-  setTimeout(function() { flash.classList.remove('show'); }, 400);
+    // Flash feedback
+    var flash = document.getElementById('flash');
+    flash.classList.add('show');
+    setTimeout(function() { flash.classList.remove('show'); }, 400);
 
-  var btn = document.getElementById('submit-btn');
-  btn.textContent = '✓ Applied! You can close this tab.';
-  btn.classList.add('success');
+    var btn = document.getElementById('submit-btn');
+    btn.textContent = '✓ Applied! You can close this tab.';
+    btn.classList.add('success');
+    btn.disabled = true;
 
-  // Submit form to Streamlit app URL
-  var form = document.getElementById('submit-form');
-  form.action = RETURN_URL;
-  document.getElementById('regions-input').value = b64;
-  setTimeout(function() { form.submit(); }, 300);
+    // FIX: navigate the PARENT / OPENER window back to Streamlit with the
+    // regions query param so this painter tab stays visible (success message).
+    // Falls back to navigating this tab if opener is not accessible.
+    var targetUrl = RETURN_URL + '?regions=' + encodeURIComponent(b64);
+    setTimeout(function() {
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.location.href = targetUrl;
+        } else {
+          // No opener (e.g. user opened via address bar copy-paste);
+          // open Streamlit in a new tab so they can still see the painter result.
+          window.open(targetUrl, '_blank');
+        }
+      } catch(e) {
+        // Cross-origin opener: fall back to navigating this tab
+        window.location.href = targetUrl;
+      }
+    }, 350);
+
+  } catch(e) {
+    showError('Failed to encode regions: ' + e.message);
+  }
 }
 
-// ── Keyboard ──────────────────────────────────────────────────────────────────
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
 document.addEventListener('keydown', function(e) {
-  if (e.ctrlKey && e.key === 'z') { undo(); return; }
-  var map = { h:'head', t:'torso', l:'limb', u:'tuft', e:'erase' };
+  // Don't intercept when focus is on an input/button
+  if (e.target && e.target.tagName === 'INPUT') return;
+  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); return; }
+  if (e.metaKey && e.key === 'z') { e.preventDefault(); undo(); return; }
+  var map = { h: 'head', t: 'torso', l: 'limb', u: 'tuft', e: 'erase' };
   if (map[e.key]) setRegion(map[e.key]);
   if (e.key === '1') setSize(1);
   if (e.key === '2') setSize(2);

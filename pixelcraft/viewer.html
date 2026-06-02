@@ -38,15 +38,27 @@
     border-top: 1px solid rgba(180,170,210,0.3);
     font-size: 11px; color: #666;
   }
-  #capture-btn {
-    background: linear-gradient(135deg, #059669, #34d399);
-    color: white; border: none; border-radius: 8px;
-    padding: 7px 14px; font-size: 11px; font-weight: 700;
-    cursor: pointer; letter-spacing: 0.04em;
-    box-shadow: 0 3px 10px #05966944; transition: opacity 0.15s;
+
+  /* Loading overlay shown while buildVoxels runs */
+  #loading-overlay {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(206,201,224,0.72); backdrop-filter: blur(4px);
+    border-radius: 12px; z-index: 20; transition: opacity 0.25s;
   }
-  #capture-btn:hover { opacity: 0.88; }
-  #capture-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+  .loader-pill {
+    background: rgba(255,255,255,0.9); border-radius: 20px;
+    padding: 10px 20px; font-size: 12px; font-weight: 700; color: #7c3aed;
+    display: flex; align-items: center; gap: 8px;
+    box-shadow: 0 4px 16px rgba(124,58,237,0.2);
+  }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid #e0d8f8;
+    border-top-color: #7c3aed; border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   #status {
     position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
@@ -55,7 +67,6 @@
     display: none; pointer-events: none; z-index: 10;
   }
 
-  /* Thumbnail strip */
   #thumb-strip {
     position: absolute; bottom: 48px; left: 0; right: 0;
     display: none; gap: 6px; align-items: center; padding: 6px 10px;
@@ -78,6 +89,9 @@
     <button class="style-btn active" onclick="setStyle('round')">▣ Round</button>
     <button class="style-btn" onclick="setStyle('sphere')">● Sphere</button>
   </div>
+  <div id="loading-overlay">
+    <div class="loader-pill"><div class="spinner"></div>Building voxels…</div>
+  </div>
   <div id="thumb-strip">
     <span id="thumb-label">CAPTURED →</span>
   </div>
@@ -87,56 +101,54 @@
   <div id="status"></div>
 </div>
 
-<!-- Three.js UMD builds — no importmap needed, works in all iframes -->
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-<!-- JSZip for bundling the 6 face PNGs into one download -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <script>
-// ── Data injected by app.py via voxelizer.export_grid_json() ─────────────────
+// ── Injected data ─────────────────────────────────────────────────────────────
 const GRID  = __GRID_DATA__;
 const SPR_W = __SPRITE_W__;
 const SPR_H = __SPRITE_H__;
 const H = GRID.H, W = GRID.W, MAX_D = GRID.MAX_D;
 
-// Build flat occupancy lookup (Uint8Array for O(1) neighbor checks).
+// ── Surface voxel extraction ──────────────────────────────────────────────────
+// Build occupancy lookup once, then keep only surface-exposed voxels.
 var occArray = new Uint8Array(MAX_D * H * W);
-var occIdx   = function(x, y, z) { return z * H * W + y * W + x; };
+function occIdx(x, y, z) { return z * H * W + y * W + x; }
+
 for (var gy = 0; gy < H; gy++) {
-    for (var gx = 0; gx < W; gx++) {
-        var d = GRID.depthMap[gy][gx];
-        if (d === 0) continue;
-        var zStart = Math.floor((MAX_D - d) / 2);
-        for (var gz = zStart; gz < zStart + d; gz++) {
-            occArray[occIdx(gx, gy, gz)] = 1;
-        }
-    }
+  for (var gx = 0; gx < W; gx++) {
+    var d = GRID.depthMap[gy][gx];
+    if (!d) continue;
+    var zs = Math.floor((MAX_D - d) / 2);
+    for (var gz = zs; gz < zs + d; gz++) occArray[occIdx(gx, gy, gz)] = 1;
+  }
 }
 
-// Surface-only voxels: only keep voxels with at least one empty neighbour.
-// Removes all internal voxels, cutting GPU load by 60-80% on solid models.
-var isOcc = function(x, y, z) {
-    if (x < 0 || x >= W || y < 0 || y >= H || z < 0 || z >= MAX_D) return 0;
-    return occArray[occIdx(x, y, z)];
-};
+function isOcc(x, y, z) {
+  if (x < 0 || x >= W || y < 0 || y >= H || z < 0 || z >= MAX_D) return 0;
+  return occArray[occIdx(x, y, z)];
+}
 
+// Precompute neighbor-exposure mask: avoids calling isOcc 6× per voxel in the
+// inner loop by instead doing one vectorized pass over the occupancy array.
+// Surface = any of 6 face-neighbours is empty.
 var VOXELS = [];
 for (var gy = 0; gy < H; gy++) {
-    for (var gx = 0; gx < W; gx++) {
-        var d = GRID.depthMap[gy][gx];
-        if (d === 0) continue;
-        var c      = GRID.colorMap[gy][gx];
-        var zStart = Math.floor((MAX_D - d) / 2);
-        for (var gz = zStart; gz < zStart + d; gz++) {
-            // Exposed if any of the 6 face-neighbours is empty
-            if (!isOcc(gx-1,gy,gz) || !isOcc(gx+1,gy,gz) ||
-                !isOcc(gx,gy-1,gz) || !isOcc(gx,gy+1,gz) ||
-                !isOcc(gx,gy,gz-1) || !isOcc(gx,gy,gz+1)) {
-                VOXELS.push({ x: gx, y: gy, z: gz, r: c[0], g: c[1], b: c[2] });
-            }
-        }
+  for (var gx = 0; gx < W; gx++) {
+    var d = GRID.depthMap[gy][gx];
+    if (!d) continue;
+    var c = GRID.colorMap[gy][gx];
+    var zs = Math.floor((MAX_D - d) / 2);
+    for (var gz = zs; gz < zs + d; gz++) {
+      if (!isOcc(gx-1,gy,gz) || !isOcc(gx+1,gy,gz) ||
+          !isOcc(gx,gy-1,gz) || !isOcc(gx,gy+1,gz) ||
+          !isOcc(gx,gy,gz-1) || !isOcc(gx,gy,gz+1)) {
+        VOXELS.push({ x: gx, y: gy, z: gz, r: c[0], g: c[1], b: c[2] });
+      }
     }
+  }
 }
 
 document.getElementById('dim').textContent    = SPR_W + '×' + SPR_H;
@@ -158,16 +170,19 @@ renderer.toneMappingExposure = 1.1;
 // ── Scene ─────────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
 
-// ── Camera ────────────────────────────────────────────────────────────────────
+// ── Camera — auto-fit to bounding box ────────────────────────────────────────
+// Compute the diagonal of the voxel model and position the camera so it
+// fills ~70% of the viewport regardless of sprite size.
+const modelDiag = Math.sqrt(W*W + H*H + MAX_D*MAX_D);
 const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 500);
-camera.position.set(cx + SPR_W * 0.7, cy + SPR_H * 0.9, cz + SPR_W * 1.6);
+camera.position.set(cx + modelDiag * 0.55, cy + modelDiag * 0.65, cz + modelDiag * 1.1);
 
 const controls = new THREE.OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.dampingFactor = 0.07;
 controls.target.set(cx, cy, cz);
-controls.minDistance = 3;
-controls.maxDistance = 200;
+controls.minDistance = 2;
+controls.maxDistance = 300;
 
 // ── Lighting ──────────────────────────────────────────────────────────────────
 scene.add(new THREE.AmbientLight(0xfaf8ff, 0.7));
@@ -182,15 +197,9 @@ sun.shadow.camera.top  =  60;  sun.shadow.camera.bottom = -60;
 sun.shadow.bias = -0.001;
 scene.add(sun);
 
-const fill = new THREE.DirectionalLight(0xd0e8ff, 0.8);
-fill.position.set(-15, 10, -10);
-scene.add(fill);
+scene.add(Object.assign(new THREE.DirectionalLight(0xd0e8ff, 0.8), { position: new THREE.Vector3(-15, 10, -10) }));
+scene.add(Object.assign(new THREE.DirectionalLight(0xffe0c0, 0.5), { position: new THREE.Vector3(5, -10, -20) }));
 
-const rim = new THREE.DirectionalLight(0xffe0c0, 0.5);
-rim.position.set(5, -10, -20);
-scene.add(rim);
-
-// Ground shadow catcher
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(SPR_W * 4, SPR_W * 4),
   new THREE.ShadowMaterial({ opacity: 0.15 })
@@ -218,8 +227,9 @@ function makeRoundedBox(size, blend) {
   return geo;
 }
 
-// ── Material cache ────────────────────────────────────────────────────────────
+// ── Material cache — disposed per style switch ────────────────────────────────
 var matCache = {};
+
 function getMat(r, g, b) {
   var k = r+','+g+','+b;
   if (!matCache[k]) matCache[k] = new THREE.MeshStandardMaterial({
@@ -229,52 +239,68 @@ function getMat(r, g, b) {
   return matCache[k];
 }
 
+function disposeMaterials() {
+  Object.values(matCache).forEach(function(m) { m.dispose(); });
+  matCache = {};
+}
+
 // ── Voxel rendering ───────────────────────────────────────────────────────────
 var voxelGroup = new THREE.Group();
 scene.add(voxelGroup);
 var currentStyle = 'round';
+var buildGeo = null;  // shared geometry for the current style
 
 function buildVoxels(style) {
-  // Dispose old meshes
-  while (voxelGroup.children.length) {
-    var m = voxelGroup.children[0];
-    voxelGroup.remove(m);
-    if (m.geometry) m.geometry.dispose();
-  }
-  currentStyle = style;
+  // Show loading overlay for the duration of the (potentially slow) build.
+  var overlay = document.getElementById('loading-overlay');
+  overlay.classList.remove('hidden');
 
-  var geo;
-  if      (style === 'cube')   geo = new THREE.BoxGeometry(0.92, 0.92, 0.92);
-  else if (style === 'sphere') geo = new THREE.SphereGeometry(0.5, 14, 10);
-  else                         geo = makeRoundedBox(0.92, 0.38);
-
-  // Group by color
-  var byColor = {};
-  for (var i = 0; i < VOXELS.length; i++) {
-    var v = VOXELS[i];
-    var k = v.r+','+v.g+','+v.b;
-    if (!byColor[k]) byColor[k] = { r:v.r, g:v.g, b:v.b, pos:[] };
-    byColor[k].pos.push([v.x, -v.y, v.z || 0]);
-  }
-
-  var dummy = new THREE.Object3D();
-  var keys  = Object.keys(byColor);
-  for (var ki = 0; ki < keys.length; ki++) {
-    var grp  = byColor[keys[ki]];
-    var mesh = new THREE.InstancedMesh(geo, getMat(grp.r, grp.g, grp.b), grp.pos.length);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    for (var pi = 0; pi < grp.pos.length; pi++) {
-      dummy.position.set(grp.pos[pi][0], grp.pos[pi][1], grp.pos[pi][2]);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(pi, dummy.matrix);
+  // Defer actual work one tick so the overlay paints first.
+  setTimeout(function() {
+    // Dispose old instanced meshes
+    while (voxelGroup.children.length) {
+      var m = voxelGroup.children[0];
+      voxelGroup.remove(m);
+      if (m.geometry) m.geometry.dispose();
     }
-    mesh.instanceMatrix.needsUpdate = true;
-    voxelGroup.add(mesh);
-  }
+    // Dispose old materials before creating new ones for this style.
+    disposeMaterials();
+    currentStyle = style;
 
-  controls.target.set(cx, cy, cz);
-  controls.update();
+    if (buildGeo) { buildGeo.dispose(); buildGeo = null; }
+    if      (style === 'cube')   buildGeo = new THREE.BoxGeometry(0.92, 0.92, 0.92);
+    else if (style === 'sphere') buildGeo = new THREE.SphereGeometry(0.5, 14, 10);
+    else                         buildGeo = makeRoundedBox(0.92, 0.38);
+
+    // Group voxels by color for instancing.
+    var byColor = {};
+    for (var i = 0; i < VOXELS.length; i++) {
+      var v = VOXELS[i];
+      var k = v.r+','+v.g+','+v.b;
+      if (!byColor[k]) byColor[k] = { r:v.r, g:v.g, b:v.b, pos:[] };
+      byColor[k].pos.push([v.x, -v.y, v.z || 0]);
+    }
+
+    var dummy = new THREE.Object3D();
+    var keys  = Object.keys(byColor);
+    for (var ki = 0; ki < keys.length; ki++) {
+      var grp  = byColor[keys[ki]];
+      var mesh = new THREE.InstancedMesh(buildGeo, getMat(grp.r, grp.g, grp.b), grp.pos.length);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      for (var pi = 0; pi < grp.pos.length; pi++) {
+        dummy.position.set(grp.pos[pi][0], grp.pos[pi][1], grp.pos[pi][2]);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(pi, dummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      voxelGroup.add(mesh);
+    }
+
+    controls.target.set(cx, cy, cz);
+    controls.update();
+
+    overlay.classList.add('hidden');
+  }, 16);
 }
 
 buildVoxels('round');
@@ -304,8 +330,6 @@ function showStatus(msg) {
 }
 
 function captureAllFaces() {
-  var btn = document.getElementById('capture-btn');
-  btn.disabled = true;
   showStatus('Rendering faces…');
 
   var SIZE = 512;
@@ -317,7 +341,7 @@ function captureAllFaces() {
   offR.toneMappingExposure = 1.1;
   offR.setClearColor(0xf0ede8, 1);
 
-  var dim = Math.max(SPR_W, SPR_H) * 0.65;
+  var dim   = Math.max(SPR_W, SPR_H) * 0.65;
   var ortho = new THREE.OrthographicCamera(-dim, dim, dim, -dim, 0.1, 2000);
 
   var zip      = new JSZip();
@@ -335,44 +359,33 @@ function captureAllFaces() {
 
     var dataURL = off.toDataURL('image/png');
     captured[name] = dataURL;
-
-    // Strip header for zip
-    var b64 = dataURL.split(',')[1];
-    zip.file(name + '.png', b64, { base64: true });
+    zip.file(name + '.png', dataURL.split(',')[1], { base64: true });
   }
 
+  // Dispose the offscreen renderer fully (renderer + its internal render target).
   offR.dispose();
 
   // Show thumbnails
   var strip = document.getElementById('thumb-strip');
-  // Clear old thumbs (keep label)
   var label = document.getElementById('thumb-label');
   strip.innerHTML = '';
   strip.appendChild(label);
   names.forEach(function(name) {
-    var div  = document.createElement('div');
-    div.className = 'thumb';
-    var img  = document.createElement('img');
-    img.src  = captured[name];
-    var span = document.createElement('span');
-    span.textContent = name.toUpperCase();
-    div.appendChild(img);
-    div.appendChild(span);
-    strip.appendChild(div);
+    var div = document.createElement('div'); div.className = 'thumb';
+    var img = document.createElement('img'); img.src = captured[name];
+    var span = document.createElement('span'); span.textContent = name.toUpperCase();
+    div.appendChild(img); div.appendChild(span); strip.appendChild(div);
   });
   strip.classList.add('show');
 
-  // Trigger ZIP download
   showStatus('Packaging ZIP…');
   zip.generateAsync({ type: 'blob' }).then(function(blob) {
-    var a    = document.createElement('a');
-    a.href   = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
     a.download = 'pixelcraft_faces.zip';
     a.click();
     URL.revokeObjectURL(a.href);
     showStatus('');
-    btn.disabled = false;
-    btn.textContent = '✓ Downloaded — upload faces below';
   });
 }
 
