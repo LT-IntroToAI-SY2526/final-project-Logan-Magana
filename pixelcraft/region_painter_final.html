@@ -225,7 +225,13 @@ function showError(msg) {
 }
 
 // ── Injected by Python ────────────────────────────────────────────────────────
-var SPRITE_SRC = "__SPRITE_B64__";
+var SPRITE_SRC = "__SPRITE_B64__"; 
+document.addEventListener('DOMContentLoaded', function() {
+  var dbg = document.createElement('div');
+  dbg.style ='background:#ff0;color:#000;padding:6px;font-size:11px;word-break:break-all;';
+  dbg.textContent = 'SRC[:40]=' +SPRITE_SRC.substring(0,40) + ' | painted=' + regionMap.filter(function(v){return v>=0;}).length;
+  document.body.prepend(dbg); 
+});
 var SPRITE_W   = __SPRITE_W__;
 var SPRITE_H   = __SPRITE_H__;
 var RETURN_URL = "__RETURN_URL__";
@@ -323,9 +329,6 @@ function redraw() {
 }
 
 // ── Coordinate helper ─────────────────────────────────────────────────────────
-// getBoundingClientRect() gives the CSS (rendered) size; cv.width/height is
-// the internal resolution. They differ when max-width:100% shrinks the canvas.
-// We correct for that here so clicks land on the right pixel.
 function pixelAt(clientX, clientY) {
   var r      = cv.getBoundingClientRect();
   var scaleX = cv.width  / r.width;
@@ -470,19 +473,25 @@ function submitRegions() {
     setTimeout(function() { flash.classList.remove('show'); }, 400);
 
     var btn = document.getElementById('submit-btn');
-    btn.textContent = '✓ Applied! You can close this tab.';
+    btn.textContent = '✓ Applied! Returning to PixelCraft…';
     btn.classList.add('success');
     btn.disabled = true;
 
     var targetUrl = RETURN_URL + '?regions=' + encodeURIComponent(b64);
+
+    // Try postMessage to opener first; always fall back to navigating this tab.
+    // Streamlit's app.py decodes ?regions= on the next rerun either way.
     setTimeout(function() {
+      var sent = false;
       try {
         if (window.opener && !window.opener.closed) {
-          window.opener.location.href = targetUrl;
-        } else {
-          window.open(targetUrl, '_blank');
+          window.opener.postMessage({ type: 'pixelcraft_regions', url: targetUrl }, '*');
+          sent = true;
+          // Give opener 300 ms to handle the message, then navigate as fallback.
+          setTimeout(function() { window.location.href = targetUrl; }, 300);
         }
-      } catch (e) {
+      } catch (e) { /* opener blocked — fall through */ }
+      if (!sent) {
         window.location.href = targetUrl;
       }
     }, 350);
