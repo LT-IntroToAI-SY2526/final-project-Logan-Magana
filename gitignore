@@ -1,0 +1,17 @@
+# Runtime-generated files
+pixelcraft/static/painter.html
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
