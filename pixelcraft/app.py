@@ -117,7 +117,7 @@ def sprite_to_b64(sprite: Image.Image) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-@st.cache_data(show_spinner=False)
+
 def _cached_auto_region_map_json(sprite_hash: str, img_bytes: bytes) -> str:
     """
     Compute auto-region JSON once per unique sprite and cache it.
@@ -141,7 +141,7 @@ def _cached_auto_region_map_json(sprite_hash: str, img_bytes: bytes) -> str:
     return json.dumps(rows)
 
 
-@st.cache_data(show_spinner=False)
+
 def _cached_painter_template() -> str:
     """Read region_painter_final.html once and cache it for the process lifetime."""
     return (Path(__file__).parent / "region_painter_final.html").read_text(encoding="utf-8")

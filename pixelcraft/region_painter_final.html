@@ -117,7 +117,12 @@ h1 {
   max-height: 480px;
   user-select: none;
   -webkit-user-select: none;
+  /* touch-action:none tells the browser not to handle touch scrolling/zooming
+     on the canvas — required for pointerdown to fire reliably on mobile */
   touch-action: none;
+  /* pointer-events:auto is the default but stated explicitly so no parent
+     accidentally inherits none */
+  pointer-events: auto;
   filter: drop-shadow(0 0 8px rgba(167,139,250,0.2));
 }
 
@@ -256,17 +261,20 @@ var spriteReady  = false;
 
 // ── Canvas setup ──────────────────────────────────────────────────────────────
 var cv  = document.getElementById('canvas');
-var ctx = cv.getContext('2d');
-ctx.imageSmoothingEnabled = false;
+if (!cv) { showError('Canvas element not found — page may have failed to load.'); }
+var ctx = cv ? cv.getContext('2d', { willReadFrequently: false }) : null;
+if (ctx) ctx.imageSmoothingEnabled = false;
 
 var MAX_DISPLAY  = Math.min(440, window.innerWidth - 64);
-var CANVAS_SCALE = Math.max(4, Math.min(16, Math.floor(MAX_DISPLAY / Math.max(SPRITE_W, SPRITE_H))));
+var CANVAS_SCALE = Math.max(4, Math.min(16, Math.floor(MAX_DISPLAY / Math.max(SPRITE_W, SPRITE_H, 1))));
 var CW = SPRITE_W * CANVAS_SCALE;
 var CH = SPRITE_H * CANVAS_SCALE;
-cv.width  = CW;
-cv.height = CH;
-cv.style.width  = CW + 'px';
-cv.style.height = CH + 'px';
+if (cv) {
+  cv.width  = CW;
+  cv.height = CH;
+  cv.style.width  = CW + 'px';
+  cv.style.height = CH + 'px';
+}
 
 // ── Load sprite ───────────────────────────────────────────────────────────────
 var spriteImg = new Image();
@@ -297,6 +305,7 @@ spriteImg.src = SPRITE_SRC;
 
 // ── Render ────────────────────────────────────────────────────────────────────
 function redraw() {
+  if (!ctx) return;
   ctx.clearRect(0, 0, CW, CH);
   if (spriteReady) {
     ctx.imageSmoothingEnabled = false;
@@ -311,6 +320,7 @@ function redraw() {
       ctx.fillRect(x * S, y * S, S, S);
     }
   }
+  // Subtle pixel grid
   ctx.strokeStyle = 'rgba(255,255,255,0.08)';
   ctx.lineWidth = 0.5;
   for (var gx = 0; gx <= SPRITE_W; gx++) {
@@ -322,10 +332,13 @@ function redraw() {
 }
 
 // ── Coordinate helper ─────────────────────────────────────────────────────────
-// getBoundingClientRect() gives CSS size; cv.width/height is internal resolution.
-// They differ when max-width:100% shrinks the canvas; we correct for that here.
+// getBoundingClientRect() gives the CSS-rendered size; cv.width/height is the
+// internal (pixel) resolution. They differ when max-width:100% shrinks the
+// canvas element — we divide by CANVAS_SCALE AFTER correcting for CSS scale.
 function pixelAt(clientX, clientY) {
   var r      = cv.getBoundingClientRect();
+  // Guard: if rect has zero size the canvas isn't rendered yet.
+  if (r.width === 0 || r.height === 0) return [0, 0];
   var scaleX = cv.width  / r.width;
   var scaleY = cv.height / r.height;
   var sx = Math.floor((clientX - r.left) * scaleX / CANVAS_SCALE);
@@ -358,40 +371,43 @@ function snapshot() {
   document.getElementById('undo-btn').disabled = false;
 }
 
-// ── Mouse ─────────────────────────────────────────────────────────────────────
-cv.addEventListener('mousedown', function(e) {
-  if (e.button !== 0) return;
-  e.preventDefault();
-  snapshot();
-  painting = true;
-  var p = pixelAt(e.clientX, e.clientY);
-  paint(p[0], p[1]);
-});
+// ── Pointer events (replaces separate mouse + touch handlers) ─────────────────
+// Using the Pointer Events API gives us a single unified path for mouse,
+// touch, and stylus input.  setPointerCapture ensures pointermove keeps
+// firing even when the pointer leaves the canvas during a drag.
+if (cv) {
+  cv.addEventListener('pointerdown', function(e) {
+    // Ignore anything that isn't the primary button (for mouse: left click).
+    if (e.button !== undefined && e.button !== 0 && e.pointerType === 'mouse') return;
+    e.preventDefault();
+    // Capture so pointermove/pointerup are delivered to cv even off-canvas.
+    try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+    snapshot();
+    painting = true;
+    var p = pixelAt(e.clientX, e.clientY);
+    paint(p[0], p[1]);
+  });
 
-window.addEventListener('mousemove', function(e) {
-  if (!painting) return;
-  var p = pixelAt(e.clientX, e.clientY);
-  paint(p[0], p[1]);
-});
+  cv.addEventListener('pointermove', function(e) {
+    if (!painting) return;
+    e.preventDefault();
+    var p = pixelAt(e.clientX, e.clientY);
+    paint(p[0], p[1]);
+  });
 
-window.addEventListener('mouseup', function() { painting = false; });
+  cv.addEventListener('pointerup', function(e) {
+    painting = false;
+    try { cv.releasePointerCapture(e.pointerId); } catch (_) {}
+  });
 
-// ── Touch ─────────────────────────────────────────────────────────────────────
-cv.addEventListener('touchstart', function(e) {
-  e.preventDefault();
-  snapshot();
-  painting = true;
-  var p = pixelAt(e.touches[0].clientX, e.touches[0].clientY);
-  paint(p[0], p[1]);
-}, { passive: false });
+  cv.addEventListener('pointercancel', function() {
+    painting = false;
+  });
 
-cv.addEventListener('touchmove', function(e) {
-  e.preventDefault();
-  var p = pixelAt(e.touches[0].clientX, e.touches[0].clientY);
-  paint(p[0], p[1]);
-}, { passive: false });
-
-cv.addEventListener('touchend', function() { painting = false; });
+  // Prevent context menu on right-click so long-press on mobile doesn't
+  // interrupt a painting session.
+  cv.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+}
 
 // ── Controls ──────────────────────────────────────────────────────────────────
 function setRegion(r) {
@@ -477,28 +493,19 @@ function submitRegions() {
     btn.classList.add('success');
     btn.disabled = true;
 
-    // Build the return URL with the encoded region map.
-    // RETURN_URL already has the correct host+port injected by Python.
     var targetUrl = RETURN_URL + '?regions=' + encodeURIComponent(b64);
 
     setTimeout(function() {
-      // Preferred path: navigate the Streamlit tab (opener) directly so it
-      // picks up ?regions= on its next rerun. Then close or navigate this tab.
       var navigatedOpener = false;
       try {
         if (window.opener && !window.opener.closed) {
           window.opener.location.href = targetUrl;
           navigatedOpener = true;
-          // Give the opener a moment to start loading, then close painter tab.
           setTimeout(function() { window.close(); }, 600);
         }
-      } catch (e) {
-        // Cross-origin or popup-blocker prevented access to opener.
-      }
+      } catch (e) { /* cross-origin or popup blocker */ }
 
       if (!navigatedOpener) {
-        // Fallback: navigate this tab to the Streamlit URL with the regions param.
-        // The user will land on the main app with regions applied.
         window.location.href = targetUrl;
       }
     }, 350);
