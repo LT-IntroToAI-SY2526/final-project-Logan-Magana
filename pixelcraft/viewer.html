@@ -11,12 +11,14 @@
     background: radial-gradient(ellipse at 50% 30%, #e8e3f5 0%, #ddd8ec 40%, #cec9e0 100%);
     border-radius: 12px; overflow: hidden;
   }
-  #c { display: block; width: 100%; height: 100%; }
+  #c { display: block; width: 100%; height: 100%; cursor: grab; }
+  #c:active { cursor: grabbing; }
 
   #info-bar {
     position: absolute; top: 12px; left: 12px;
     background: rgba(255,255,255,0.82); backdrop-filter: blur(8px);
     border-radius: 8px; padding: 5px 10px; font-size: 11px; color: #444;
+    pointer-events: none;
   }
 
   #style-btns {
@@ -28,7 +30,9 @@
     border-radius: 8px; padding: 5px 11px; font-size: 11px; color: #5a3fa0;
     cursor: pointer; font-weight: 700; transition: all 0.15s;
   }
-  .style-btn:hover, .style-btn.active { background: #7c3aed; color: white; border-color: #7c3aed; }
+  .style-btn:hover, .style-btn.active {
+    background: #7c3aed; color: white; border-color: #7c3aed;
+  }
 
   #bottom-bar {
     position: absolute; bottom: 0; left: 0; right: 0;
@@ -37,26 +41,8 @@
     background: rgba(255,255,255,0.78); backdrop-filter: blur(8px);
     border-top: 1px solid rgba(180,170,210,0.3);
     font-size: 11px; color: #666;
+    pointer-events: none;
   }
-
-  #status {
-    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
-    background: rgba(124,58,237,0.92); color: white;
-    padding: 10px 20px; border-radius: 10px; font-size: 12px; font-weight: 600;
-    display: none; pointer-events: none; z-index: 10;
-  }
-
-  #thumb-strip {
-    position: absolute; bottom: 48px; left: 0; right: 0;
-    display: none; gap: 6px; align-items: center; padding: 6px 10px;
-    background: rgba(255,255,255,0.9); backdrop-filter: blur(8px);
-    border-top: 1px solid #ddd; overflow-x: auto;
-  }
-  #thumb-strip.show { display: flex; }
-  .thumb { display: flex; flex-direction: column; align-items: center; gap: 2px; flex-shrink: 0; }
-  .thumb img { width: 46px; height: 46px; border-radius: 4px; border: 1.5px solid #a78bfa; image-rendering: pixelated; }
-  .thumb span { font-size: 8px; color: #7c3aed; font-weight: 700; letter-spacing: 0.06em; }
-  #thumb-label { font-size: 10px; font-weight: 700; color: #7c3aed; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -64,317 +50,322 @@
   <canvas id="c"></canvas>
   <div id="info-bar">Sprite: <span id="dim">?</span> · <span id="vcount">?</span> voxels</div>
   <div id="style-btns">
-    <button class="style-btn" onclick="setStyle('cube')">■ Box</button>
-    <button class="style-btn active" onclick="setStyle('round')">▣ Round</button>
-    <button class="style-btn" onclick="setStyle('sphere')">● Sphere</button>
-  </div>
-  <div id="thumb-strip">
-    <span id="thumb-label">CAPTURED →</span>
+    <button class="style-btn active" onclick="setAngle(0)" id="btn-iso">⬡ Isometric</button>
+    <button class="style-btn" onclick="setAngle(1)" id="btn-front">■ Front</button>
+    <button class="style-btn" onclick="setAngle(2)" id="btn-side">◧ Side</button>
   </div>
   <div id="bottom-bar">
-    <span>🖱 drag to rotate · scroll to zoom · right-drag to pan</span>
+    <span>🖱 drag to rotate · scroll to zoom</span>
   </div>
-  <div id="status"></div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-
 <script>
+// ── Injected data ──────────────────────────────────────────────────────────
 const GRID  = __GRID_DATA__;
 const SPR_W = __SPRITE_W__;
 const SPR_H = __SPRITE_H__;
 const H = GRID.H, W = GRID.W, MAX_D = GRID.MAX_D;
 
-// ── Build occupancy array + surface voxel list ────────────────────────────────
-var occArray = new Uint8Array(MAX_D * H * W);
-function occIdx(x, y, z) { return z * H * W + y * W + x; }
+// ── Build surface voxel list ───────────────────────────────────────────────
+var occSet = {};
+function key(x,y,z){ return x+','+y+','+z; }
 
-for (var gy = 0; gy < H; gy++) {
-  for (var gx = 0; gx < W; gx++) {
+for (var gy=0; gy<H; gy++) {
+  for (var gx=0; gx<W; gx++) {
     var d = GRID.depthMap[gy][gx];
     if (!d) continue;
     var zs = Math.floor((MAX_D - d) / 2);
-    for (var gz = zs; gz < zs + d; gz++) occArray[occIdx(gx, gy, gz)] = 1;
+    for (var gz=zs; gz<zs+d; gz++) occSet[key(gx,gy,gz)] = 1;
   }
 }
 
-function isOcc(x, y, z) {
-  if (x < 0 || x >= W || y < 0 || y >= H || z < 0 || z >= MAX_D) return 0;
-  return occArray[occIdx(x, y, z)];
+function isOcc(x,y,z) {
+  if (x<0||x>=W||y<0||y>=H||z<0||z>=MAX_D) return false;
+  return !!occSet[key(x,y,z)];
 }
 
 var VOXELS = [];
-for (var gy = 0; gy < H; gy++) {
-  for (var gx = 0; gx < W; gx++) {
+for (var gy=0; gy<H; gy++) {
+  for (var gx=0; gx<W; gx++) {
     var d = GRID.depthMap[gy][gx];
     if (!d) continue;
     var c = GRID.colorMap[gy][gx];
+    if (!c) continue;
     var zs = Math.floor((MAX_D - d) / 2);
-    for (var gz = zs; gz < zs + d; gz++) {
-      if (!isOcc(gx-1,gy,gz) || !isOcc(gx+1,gy,gz) ||
-          !isOcc(gx,gy-1,gz) || !isOcc(gx,gy+1,gz) ||
-          !isOcc(gx,gy,gz-1) || !isOcc(gx,gy,gz+1)) {
-        VOXELS.push({ x: gx, y: gy, z: gz, r: c[0], g: c[1], b: c[2] });
+    for (var gz=zs; gz<zs+d; gz++) {
+      // Only surface voxels
+      if (!isOcc(gx-1,gy,gz)||!isOcc(gx+1,gy,gz)||
+          !isOcc(gx,gy-1,gz)||!isOcc(gx,gy+1,gz)||
+          !isOcc(gx,gy,gz-1)||!isOcc(gx,gy,gz+1)) {
+        VOXELS.push({x:gx, y:gy, z:gz, r:c[0], g:c[1], b:c[2]});
       }
     }
   }
 }
 
-document.getElementById('dim').textContent    = SPR_W + '×' + SPR_H;
+document.getElementById('dim').textContent    = SPR_W+'×'+SPR_H;
 document.getElementById('vcount').textContent = VOXELS.length;
 
-const cx = SPR_W / 2 - 0.5;
-const cy = -SPR_H / 2 + 0.5;
-const cz = MAX_D / 2;
+// ── Canvas + context ───────────────────────────────────────────────────────
+var wrap   = document.getElementById('canvas-wrap');
+var canvas = document.getElementById('c');
+var ctx    = canvas.getContext('2d');
 
-// ── Renderer ──────────────────────────────────────────────────────────────────
-const canvas = document.getElementById('c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-renderer.setPixelRatio(window.devicePixelRatio);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.1;
+// ── Camera state ───────────────────────────────────────────────────────────
+var rotX   = 0.55;   // radians, pitch
+var rotY   = 0.75;   // radians, yaw
+var zoom   = 1.0;
+var angleMode = 0;   // 0=iso, 1=front, 2=side
 
-// ── Scene ─────────────────────────────────────────────────────────────────────
-const scene = new THREE.Scene();
+var cx = W / 2, cy_v = H / 2, cz = MAX_D / 2;
 
-// ── Camera ────────────────────────────────────────────────────────────────────
-const modelDiag = Math.sqrt(W*W + H*H + MAX_D*MAX_D);
-const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 500);
-camera.position.set(cx + modelDiag * 0.55, cy + modelDiag * 0.65, cz + modelDiag * 1.1);
+// ── Projection ────────────────────────────────────────────────────────────
+function project(vx, vy, vz) {
+  // Translate to center
+  var x = vx - cx;
+  var y = vy - cy_v;
+  var z = vz - cz;
 
-const controls = new THREE.OrbitControls(camera, canvas);
-controls.enableDamping = true;
-controls.dampingFactor = 0.07;
-controls.target.set(cx, cy, cz);
-controls.minDistance = 2;
-controls.maxDistance = 300;
+  // Rotate Y (yaw)
+  var cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+  var x1 =  x * cosY + z * sinY;
+  var z1 = -x * sinY + z * cosY;
+  var y1 =  y;
 
-// ── Lighting ──────────────────────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0xfaf8ff, 0.7));
+  // Rotate X (pitch)
+  var cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+  var y2 =  y1 * cosX - z1 * sinX;
+  var z2 =  y1 * sinX + z1 * cosX;
+  var x2 =  x1;
 
-const sun = new THREE.DirectionalLight(0xfff9f0, 2.2);
-sun.position.set(20, 30, 20);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.near = 0.1; sun.shadow.camera.far = 200;
-sun.shadow.camera.left = -60;  sun.shadow.camera.right = 60;
-sun.shadow.camera.top  =  60;  sun.shadow.camera.bottom = -60;
-sun.shadow.bias = -0.001;
-scene.add(sun);
-
-const fill = new THREE.DirectionalLight(0xd0e8ff, 0.8);
-fill.position.set(-15, 10, -10);
-scene.add(fill);
-
-const rim = new THREE.DirectionalLight(0xffe0c0, 0.5);
-rim.position.set(5, -10, -20);
-scene.add(rim);
-
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(SPR_W * 4, SPR_W * 4),
-  new THREE.ShadowMaterial({ opacity: 0.15 })
-);
-ground.rotation.x = -Math.PI / 2;
-ground.position.set(cx, cy - SPR_H * 0.6, 0);
-ground.receiveShadow = true;
-scene.add(ground);
-
-// ── Geometry helpers ──────────────────────────────────────────────────────────
-function makeRoundedBox(size, blend) {
-  var geo = new THREE.BoxGeometry(size, size, size, 2, 2, 2);
-  var pos = geo.attributes.position;
-  var r   = size / 2;
-  for (var i = 0; i < pos.count; i++) {
-    var x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-    var len = Math.sqrt(x*x + y*y + z*z) || 1;
-    pos.setXYZ(i,
-      x*(1-blend) + (x/len*r)*blend,
-      y*(1-blend) + (y/len*r)*blend,
-      z*(1-blend) + (z/len*r)*blend
-    );
-  }
-  geo.computeVertexNormals();
-  return geo;
+  return {
+    sx: x2,
+    sy: y2,
+    depth: z2
+  };
 }
 
-// ── Material + geometry management ───────────────────────────────────────────
-// Each style gets its own geometry instance. Materials are cached by color and
-// disposed when we switch styles, so we never leak WebGL objects.
-var matCache = {};
-var currentGeo = null;
+// ── Face colors ────────────────────────────────────────────────────────────
+function faceColor(r, g, b, shade) {
+  return 'rgb('+Math.round(r*shade)+','+Math.round(g*shade)+','+Math.round(b*shade)+')';
+}
 
-function getMat(r, g, b) {
-  var k = r+','+g+','+b;
-  if (!matCache[k]) matCache[k] = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(r/255, g/255, b/255),
-    roughness: 0.55, metalness: 0.05
+// ── Sort voxels back-to-front (painter's algorithm) ───────────────────────
+function sortedVoxels() {
+  var list = VOXELS.map(function(v) {
+    var p = project(v.x + 0.5, v.y + 0.5, v.z + 0.5);
+    return { v: v, depth: p.depth };
   });
-  return matCache[k];
+  list.sort(function(a, b) { return b.depth - a.depth; });
+  return list;
 }
 
-function clearScene() {
-  // Remove and dispose every instanced mesh in the group.
-  while (voxelGroup.children.length) {
-    var m = voxelGroup.children[0];
-    voxelGroup.remove(m);
-    // Do NOT dispose m.geometry here — it is currentGeo, disposed below.
-    // Only dispose the mesh's own matrix buffer implicitly via GC.
+// ── Draw one voxel as 3 visible faces ────────────────────────────────────
+function drawVoxel(v, scale, offX, offY) {
+  var r = v.r, g = v.g, b = v.b;
+  var s = scale;
+
+  // Project the 8 corners
+  function P(dx, dy, dz) {
+    var p = project(v.x + dx, v.y + dy, v.z + dz);
+    return { x: offX + p.sx * s, y: offY + p.sy * s };
   }
-  // Now it's safe to dispose the shared geometry.
-  if (currentGeo) { currentGeo.dispose(); currentGeo = null; }
-  // Dispose all cached materials.
-  Object.values(matCache).forEach(function(m) { m.dispose(); });
-  matCache = {};
+
+  var p000 = P(0,0,0), p100 = P(1,0,0), p010 = P(0,1,0), p110 = P(1,1,0);
+  var p001 = P(0,0,1), p101 = P(1,0,1), p011 = P(0,1,1), p111 = P(1,1,1);
+
+  // Determine which faces to draw based on camera direction
+  var cp = project(0.5, 0.5, 0.5);
+
+  // Top face (y=0): visible if camera is above center
+  if (Math.sin(rotX) > -0.1) {
+    ctx.beginPath();
+    ctx.moveTo(p000.x, p000.y);
+    ctx.lineTo(p100.x, p100.y);
+    ctx.lineTo(p101.x, p101.y);
+    ctx.lineTo(p001.x, p001.y);
+    ctx.closePath();
+    ctx.fillStyle = faceColor(r, g, b, 1.0);
+    ctx.fill();
+  }
+
+  // Front face (y+1): visible based on yaw
+  var showFront = Math.cos(rotX) * Math.sin(rotY + Math.PI/2) > 0;
+  if (true) { // always draw, shade determines visibility feel
+    ctx.beginPath();
+    ctx.moveTo(p010.x, p010.y);
+    ctx.lineTo(p110.x, p110.y);
+    ctx.lineTo(p111.x, p111.y);
+    ctx.lineTo(p011.x, p011.y);
+    ctx.closePath();
+    ctx.fillStyle = faceColor(r, g, b, 0.65);
+    ctx.fill();
+  }
+
+  // Right face (x+1)
+  if (true) {
+    ctx.beginPath();
+    ctx.moveTo(p100.x, p100.y);
+    ctx.lineTo(p110.x, p110.y);
+    ctx.lineTo(p111.x, p111.y);
+    ctx.lineTo(p101.x, p101.y);
+    ctx.closePath();
+    ctx.fillStyle = faceColor(r, g, b, 0.82);
+    ctx.fill();
+  }
+
+  // Left face (x=0) — draw opposite side when rotated
+  ctx.beginPath();
+  ctx.moveTo(p000.x, p000.y);
+  ctx.lineTo(p010.x, p010.y);
+  ctx.lineTo(p011.x, p011.y);
+  ctx.lineTo(p001.x, p001.y);
+  ctx.closePath();
+  ctx.fillStyle = faceColor(r, g, b, 0.55);
+  ctx.fill();
+
+  // Bottom face
+  ctx.beginPath();
+  ctx.moveTo(p001.x, p001.y);
+  ctx.lineTo(p101.x, p101.y);
+  ctx.lineTo(p111.x, p111.y);
+  ctx.lineTo(p011.x, p011.y);
+  ctx.closePath();
+  ctx.fillStyle = faceColor(r, g, b, 0.42);
+  ctx.fill();
 }
 
-// ── Voxel group ───────────────────────────────────────────────────────────────
-var voxelGroup = new THREE.Group();
-scene.add(voxelGroup);
-
-function buildVoxels(style) {
-  clearScene();
-
-  if      (style === 'cube')   currentGeo = new THREE.BoxGeometry(0.92, 0.92, 0.92);
-  else if (style === 'sphere') currentGeo = new THREE.SphereGeometry(0.5, 14, 10);
-  else                         currentGeo = makeRoundedBox(0.92, 0.38);
-
-  // Group by color for instancing — fewer draw calls, much faster.
-  var byColor = {};
-  for (var i = 0; i < VOXELS.length; i++) {
-    var v = VOXELS[i];
-    var k = v.r+','+v.g+','+v.b;
-    if (!byColor[k]) byColor[k] = { r:v.r, g:v.g, b:v.b, pos:[] };
-    byColor[k].pos.push([v.x, -v.y, v.z || 0]);
-  }
-
-  var dummy = new THREE.Object3D();
-  var keys  = Object.keys(byColor);
-  for (var ki = 0; ki < keys.length; ki++) {
-    var grp  = byColor[keys[ki]];
-    var mesh = new THREE.InstancedMesh(currentGeo, getMat(grp.r, grp.g, grp.b), grp.pos.length);
-    mesh.castShadow = true; mesh.receiveShadow = true;
-    for (var pi = 0; pi < grp.pos.length; pi++) {
-      dummy.position.set(grp.pos[pi][0], grp.pos[pi][1], grp.pos[pi][2]);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(pi, dummy.matrix);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    voxelGroup.add(mesh);
-  }
-
-  controls.target.set(cx, cy, cz);
-  controls.update();
-}
-
-// Build synchronously — no setTimeout, no overlay. The data is already in
-// memory (injected JSON); Three.js geometry creation is fast (<50ms for
-// typical sprites). The previous setTimeout caused the overlay to never
-// hide if anything threw, and added unnecessary complexity.
-buildVoxels('round');
-
-function setStyle(style) {
-  buildVoxels(style);
-  var labels = { cube:'■ Box', round:'▣ Round', sphere:'● Sphere' };
-  document.querySelectorAll('.style-btn').forEach(function(b) {
-    b.classList.toggle('active', b.textContent.trim() === labels[style]);
+// ── Compute scale + offset to fit model in canvas ─────────────────────────
+function computeLayout() {
+  var cw = canvas.width, ch = canvas.height;
+  var corners = [
+    [0,0,0],[W,0,0],[0,H,0],[0,0,MAX_D],
+    [W,H,0],[W,0,MAX_D],[0,H,MAX_D],[W,H,MAX_D]
+  ];
+  var minX = Infinity, maxX = -Infinity;
+  var minY = Infinity, maxY = -Infinity;
+  corners.forEach(function(c) {
+    var p = project(c[0], c[1], c[2]);
+    if (p.sx < minX) minX = p.sx;
+    if (p.sx > maxX) maxX = p.sx;
+    if (p.sy < minY) minY = p.sy;
+    if (p.sy > maxY) maxY = p.sy;
   });
+  var extX = maxX - minX || 1;
+  var extY = maxY - minY || 1;
+  var scale = Math.min(cw / extX, ch / extY) * 0.82 * zoom;
+  var offX  = cw / 2 - ((minX + maxX) / 2) * scale;
+  var offY  = ch / 2 - ((minY + maxY) / 2) * scale;
+  return { scale: scale, offX: offX, offY: offY };
 }
 
-// ── 6-Face orthographic capture → ZIP ────────────────────────────────────────
-var FACE_DIRS = {
-  front:  { pos:[cx, cy, 500],  up:[0,1,0] },
-  back:   { pos:[cx, cy,-500],  up:[0,1,0] },
-  right:  { pos:[ 500, cy, 0],  up:[0,1,0] },
-  left:   { pos:[-500, cy, 0],  up:[0,1,0] },
-  top:    { pos:[cx, 500,  0],  up:[0,0,-1] },
-  bottom: { pos:[cx,-500,  0],  up:[0,0, 1] },
-};
+// ── Main render ───────────────────────────────────────────────────────────
+function render() {
+  var cw = canvas.width, ch = canvas.height;
+  ctx.clearRect(0, 0, cw, ch);
 
-function showStatus(msg) {
-  var el = document.getElementById('status');
-  el.textContent = msg;
-  el.style.display = msg ? 'block' : 'none';
-}
+  var layout = computeLayout();
+  var sorted = sortedVoxels();
 
-function captureAllFaces() {
-  showStatus('Rendering faces…');
-
-  var SIZE = 512;
-  var off  = document.createElement('canvas');
-  off.width = off.height = SIZE;
-  var offR = new THREE.WebGLRenderer({ canvas: off, antialias: true, preserveDrawingBuffer: true });
-  offR.setSize(SIZE, SIZE);
-  offR.toneMapping = THREE.ACESFilmicToneMapping;
-  offR.toneMappingExposure = 1.1;
-  offR.setClearColor(0xf0ede8, 1);
-
-  var dim   = Math.max(SPR_W, SPR_H) * 0.65;
-  var ortho = new THREE.OrthographicCamera(-dim, dim, dim, -dim, 0.1, 2000);
-
-  var zip      = new JSZip();
-  var names    = Object.keys(FACE_DIRS);
-  var captured = {};
-
-  for (var fi = 0; fi < names.length; fi++) {
-    var name = names[fi];
-    var cfg  = FACE_DIRS[name];
-    ortho.position.set(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
-    ortho.up.set(cfg.up[0], cfg.up[1], cfg.up[2]);
-    ortho.lookAt(cx, cy, 0);
-    ortho.updateProjectionMatrix();
-    offR.render(scene, ortho);
-
-    var dataURL = off.toDataURL('image/png');
-    captured[name] = dataURL;
-    zip.file(name + '.png', dataURL.split(',')[1], { base64: true });
+  for (var i = 0; i < sorted.length; i++) {
+    drawVoxel(sorted[i].v, layout.scale, layout.offX, layout.offY);
   }
-
-  offR.dispose();
-
-  var strip = document.getElementById('thumb-strip');
-  var label = document.getElementById('thumb-label');
-  strip.innerHTML = '';
-  strip.appendChild(label);
-  names.forEach(function(name) {
-    var div = document.createElement('div'); div.className = 'thumb';
-    var img = document.createElement('img'); img.src = captured[name];
-    var span = document.createElement('span'); span.textContent = name.toUpperCase();
-    div.appendChild(img); div.appendChild(span); strip.appendChild(div);
-  });
-  strip.classList.add('show');
-
-  showStatus('Packaging ZIP…');
-  zip.generateAsync({ type: 'blob' }).then(function(blob) {
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'pixelcraft_faces.zip';
-    a.click();
-    URL.revokeObjectURL(a.href);
-    showStatus('');
-  });
 }
 
-// ── Resize ────────────────────────────────────────────────────────────────────
-function onResize() {
-  var wrap = canvas.parentElement;
-  var w = wrap.clientWidth, h = 420;
-  renderer.setSize(w, h, false);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
+// ── Resize ────────────────────────────────────────────────────────────────
+function resize() {
+  canvas.width  = wrap.clientWidth  * window.devicePixelRatio;
+  canvas.height = wrap.clientHeight * window.devicePixelRatio;
+  canvas.style.width  = wrap.clientWidth  + 'px';
+  canvas.style.height = wrap.clientHeight + 'px';
+  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  render();
 }
-window.addEventListener('resize', onResize);
-onResize();
 
-// ── Render loop ───────────────────────────────────────────────────────────────
-(function animate() {
-  requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
-})();
+// ── Mouse / touch drag to rotate ──────────────────────────────────────────
+var dragging = false, lastX = 0, lastY = 0;
+
+canvas.addEventListener('mousedown', function(e) {
+  dragging = true;
+  lastX = e.clientX; lastY = e.clientY;
+  e.preventDefault();
+});
+window.addEventListener('mousemove', function(e) {
+  if (!dragging) return;
+  var dx = e.clientX - lastX, dy = e.clientY - lastY;
+  rotY += dx * 0.012;
+  rotX += dy * 0.012;
+  rotX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotX));
+  lastX = e.clientX; lastY = e.clientY;
+  render();
+});
+window.addEventListener('mouseup', function() { dragging = false; });
+
+canvas.addEventListener('touchstart', function(e) {
+  if (e.touches.length === 1) {
+    dragging = true;
+    lastX = e.touches[0].clientX;
+    lastY = e.touches[0].clientY;
+  }
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchmove', function(e) {
+  if (!dragging || e.touches.length !== 1) return;
+  var dx = e.touches[0].clientX - lastX;
+  var dy = e.touches[0].clientY - lastY;
+  rotY += dx * 0.012;
+  rotX += dy * 0.012;
+  rotX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotX));
+  lastX = e.touches[0].clientX;
+  lastY = e.touches[0].clientY;
+  render();
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchend', function() { dragging = false; });
+
+canvas.addEventListener('wheel', function(e) {
+  zoom *= e.deltaY > 0 ? 0.9 : 1.1;
+  zoom = Math.max(0.3, Math.min(4.0, zoom));
+  render();
+  e.preventDefault();
+}, { passive: false });
+
+// ── Angle presets ─────────────────────────────────────────────────────────
+function setAngle(mode) {
+  angleMode = mode;
+  if (mode === 0) { rotX = 0.55; rotY = 0.75; zoom = 1.0; }  // isometric
+  if (mode === 1) { rotX = 0.0;  rotY = 0.0;  zoom = 1.2; }  // front
+  if (mode === 2) { rotX = 0.0;  rotY = Math.PI/2; zoom = 1.2; } // side
+
+  ['btn-iso','btn-front','btn-side'].forEach(function(id, i) {
+    document.getElementById(id).classList.toggle('active', i === mode);
+  });
+  render();
+}
+
+// ── Animate (rotation auto-spin on load, then stops) ──────────────────────
+var spinning = true;
+var spinFrame = 0;
+function autoSpin() {
+  if (!spinning) return;
+  spinFrame++;
+  if (spinFrame < 80) {
+    rotY += 0.015;
+    render();
+    requestAnimationFrame(autoSpin);
+  } else {
+    spinning = false;
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+window.addEventListener('resize', resize);
+resize();
+requestAnimationFrame(autoSpin);
+
+// Stop auto-spin on first interaction
+canvas.addEventListener('mousedown', function() { spinning = false; }, { once: true });
+canvas.addEventListener('touchstart', function() { spinning = false; }, { once: true });
 </script>
 </body>
 </html>
