@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PixelCraft — Region Painter [DEBUG]</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=DM+Sans:wght@300;400;500&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: #0d0d14;
+  background-image: radial-gradient(ellipse at 20% 10%, #1a0a2e 0%, transparent 50%),
+                    radial-gradient(ellipse at 80% 90%, #0a1a2e 0%, transparent 50%);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 16px;
+}
+
+:root {
+  --head:  #f97316;
+  --torso: #3b82f6;
+  --limb:  #22c55e;
+  --tuft:  #a855f7;
+}
+
+h1 {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 0.9rem; color: #fff;
+  text-shadow: 0 0 20px #a78bfa88;
+  margin-bottom: 4px; letter-spacing: 0.05em;
+}
+.subtitle { font-size: 0.8rem; color: #6b6b8a; margin-bottom: 20px; }
+
+#app {
+  width: 100%; max-width: 520px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+
+#error-banner {
+  display: none; background: #3d1010; border: 1px solid #7c1d1d;
+  border-radius: 8px; padding: 8px 12px; color: #fca5a5; font-size: 11px;
+}
+
+#toolbar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  background: #16161f; border: 1px solid #2a2a3d;
+  border-radius: 12px; padding: 10px 12px;
+}
+.tool-label { font-size: 9px; font-weight: 700; color: #6b6b8a; letter-spacing: 0.1em; text-transform: uppercase; }
+.brush-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 10px; border-radius: 7px; border: 2px solid transparent;
+  cursor: pointer; font-size: 11px; font-weight: 700;
+  background: #1e1e2e; color: #aaa; transition: all 0.12s;
+  font-family: 'DM Sans', sans-serif;
+}
+.brush-btn:hover { filter: brightness(1.2); }
+.brush-btn.active { color: #fff; }
+.brush-btn[data-region="head"]  { border-color: var(--head);  }
+.brush-btn[data-region="torso"] { border-color: var(--torso); }
+.brush-btn[data-region="limb"]  { border-color: var(--limb);  }
+.brush-btn[data-region="tuft"]  { border-color: var(--tuft);  }
+.brush-btn[data-region="erase"] { border-color: #555;         }
+.brush-btn.active[data-region="head"]  { background: var(--head);  }
+.brush-btn.active[data-region="torso"] { background: var(--torso); }
+.brush-btn.active[data-region="limb"]  { background: var(--limb);  }
+.brush-btn.active[data-region="tuft"]  { background: var(--tuft);  }
+.brush-btn.active[data-region="erase"] { background: #555;         }
+.dot { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+.dot-head  { background: var(--head);  }
+.dot-torso { background: var(--torso); }
+.dot-limb  { background: var(--limb);  }
+.dot-tuft  { background: var(--tuft);  }
+.dot-erase { background: #666; }
+.sep { width: 1px; height: 24px; background: #2a2a3d; flex-shrink: 0; }
+#size-btns { display: flex; gap: 3px; }
+.size-btn {
+  width: 26px; height: 26px; border-radius: 6px; border: 1.5px solid #3d3d5c;
+  background: #1e1e2e; color: #888; font-size: 11px; font-weight: 700;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  font-family: 'DM Sans', sans-serif; transition: all 0.12s;
+}
+.size-btn.active, .size-btn:hover { border-color: #a78bfa; color: #a78bfa; background: #2a1a4e; }
+.icon-btn {
+  width: 28px; height: 28px; border-radius: 6px; border: 1.5px solid #3d3d5c;
+  background: #1e1e2e; color: #888; font-size: 13px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: all 0.12s;
+}
+.icon-btn:hover { border-color: #a78bfa; color: #a78bfa; }
+.icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+#canvas-wrap {
+  display: flex; justify-content: center; align-items: center;
+  border-radius: 12px; border: 1px solid #2a2a3d; padding: 16px;
+  overflow: hidden;
+  background-color: #13131e;
+  background-image:
+    linear-gradient(45deg, #1a1a28 25%, transparent 25%),
+    linear-gradient(-45deg, #1a1a28 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1a1a28 75%),
+    linear-gradient(-45deg, transparent 75%, #1a1a28 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+}
+#canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  cursor: crosshair;
+  display: block;
+  max-width: 100%;
+  max-height: 480px;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  pointer-events: auto;
+  filter: drop-shadow(0 0 8px rgba(167,139,250,0.2));
+}
+
+#legend {
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  padding: 8px 12px; background: #16161f; border-radius: 10px;
+  border: 1px solid #2a2a3d;
+}
+.legend-item { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; color: #8b8ba0; }
+.legend-swatch { width: 12px; height: 12px; border-radius: 3px; }
+
+#status-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 10px; color: #5a5a7a;
+}
+#submit-btn {
+  padding: 10px 22px;
+  background: linear-gradient(135deg, #7c3aed, #a78bfa);
+  color: #fff; border: none; border-radius: 9px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.04em;
+  cursor: pointer; box-shadow: 0 4px 16px #7c3aed55;
+  font-family: 'DM Sans', sans-serif;
+  transition: opacity 0.15s, transform 0.1s;
+}
+#submit-btn:hover { opacity: 0.88; transform: translateY(-1px); }
+#submit-btn.success { background: linear-gradient(135deg, #059669, #34d399); cursor: default; }
+#auto-btn {
+  padding: 8px 13px; background: #1e1e2e; border: 1.5px solid #3d3d5c;
+  color: #a78bfa; border-radius: 8px; font-size: 11px; font-weight: 700;
+  cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all 0.15s;
+}
+#auto-btn:hover { border-color: #a78bfa; background: #2a1a4e; }
+#shortcuts { font-size: 9px; color: #3d3d5c; text-align: center; letter-spacing: 0.04em; }
+
+#flash {
+  position: fixed; inset: 0; pointer-events: none;
+  background: rgba(124,58,237,0.15); opacity: 0;
+  transition: opacity 0.35s; z-index: 999;
+}
+#flash.show { opacity: 1; }
+
+/* ── DEBUG PANEL ─────────────────────────────────────────────────────────── */
+#debug-panel {
+  width: 100%; max-width: 520px; margin-top: 16px;
+  background: #0a0a10; border: 1px solid #2a2a3d; border-radius: 12px;
+  padding: 12px; font-family: 'Courier New', monospace;
+}
+#debug-panel h2 {
+  font-family: 'Press Start 2P', monospace; font-size: 0.55rem;
+  color: #a78bfa; margin-bottom: 10px; letter-spacing: 0.1em;
+}
+#debug-log {
+  height: 260px; overflow-y: auto;
+  font-size: 10px; line-height: 1.6;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.log-entry {
+  padding: 1px 4px; border-radius: 2px; white-space: pre;
+}
+.log-init    { color: #a78bfa; }
+.log-canvas  { color: #38bdf8; }
+.log-image   { color: #34d399; }
+.log-pointer { color: #fbbf24; }
+.log-coord   { color: #f97316; }
+.log-paint   { color: #22c55e; }
+.log-redraw  { color: #94a3b8; }
+.log-error   { color: #f87171; background: #3d1010; }
+.log-warn    { color: #fcd34d; background: #2d2000; }
+.log-mapchk  { color: #e879f9; }
+
+#debug-controls {
+  display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;
+}
+.dbg-btn {
+  padding: 4px 10px; border-radius: 6px; border: 1px solid #3d3d5c;
+  background: #16161f; color: #a78bfa; font-size: 10px; cursor: pointer;
+  font-family: 'DM Sans', sans-serif;
+}
+.dbg-btn:hover { border-color: #a78bfa; }
+
+#debug-summary {
+  margin-top: 8px; padding: 8px; background: #16161f; border-radius: 8px;
+  font-size: 10px; color: #8b8ba0; line-height: 1.8;
+}
+#debug-summary span { display: block; }
+.pass { color: #34d399; }
+.fail { color: #f87171; }
+.warn { color: #fcd34d; }
+.unkn { color: #94a3b8; }
+</style>
+</head>
+<body>
+
+<h1>REGION PAINTER <span style="color:#f97316;font-size:0.6rem;">[DEBUG]</span></h1>
+<p class="subtitle">instrumented build — open DevTools console for full output</p>
+
+<div id="app">
+  <div id="error-banner"></div>
+
+  <div id="toolbar">
+    <span class="tool-label">Paint</span>
+    <button class="brush-btn active" data-region="head"  onclick="setRegion('head')"><span class="dot dot-head"></span>Head</button>
+    <button class="brush-btn"        data-region="torso" onclick="setRegion('torso')"><span class="dot dot-torso"></span>Torso</button>
+    <button class="brush-btn"        data-region="limb"  onclick="setRegion('limb')"><span class="dot dot-limb"></span>Limbs</button>
+    <button class="brush-btn"        data-region="tuft"  onclick="setRegion('tuft')"><span class="dot dot-tuft"></span>Tuft</button>
+    <button class="brush-btn"        data-region="erase" onclick="setRegion('erase')"><span class="dot dot-erase"></span>Erase</button>
+    <div class="sep"></div>
+    <span class="tool-label">Size</span>
+    <div id="size-btns">
+      <button class="size-btn active" data-sz="1" onclick="setSize(1)">1</button>
+      <button class="size-btn"        data-sz="2" onclick="setSize(2)">2</button>
+      <button class="size-btn"        data-sz="3" onclick="setSize(3)">3</button>
+    </div>
+    <div class="sep"></div>
+    <button class="icon-btn" id="undo-btn"  onclick="undo()"     title="Undo (Ctrl+Z)" disabled>↩</button>
+    <button class="icon-btn" id="clear-btn" onclick="clearAll()" title="Clear all">✕</button>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <div id="legend">
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--head)"></span>HEAD — deepest</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--torso)"></span>TORSO</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--limb)"></span>LIMBS</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--tuft)"></span>TUFT — shallowest</span>
+    <span class="legend-item" style="margin-left:auto;color:#3d3d5c;">unpainted = auto</span>
+  </div>
+
+  <div id="status-bar">
+    <span id="cov-text">painted: 0 px</span>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button id="auto-btn" onclick="applyAutoDetect()">⟳ Reset to auto</button>
+      <button id="submit-btn" onclick="submitRegions()">Apply regions →</button>
+    </div>
+  </div>
+
+  <div id="shortcuts">H=head · T=torso · L=limbs · U=tuft · E=erase · 1/2/3=brush · Ctrl+Z=undo</div>
+</div>
+
+<!-- ── DEBUG PANEL ──────────────────────────────────────────────────────── -->
+<div id="debug-panel">
+  <h2>⬡ PIPELINE DEBUGGER</h2>
+  <div id="debug-log"></div>
+  <div id="debug-controls">
+    <button class="dbg-btn" onclick="dumpMapSample()">Dump regionMap[0..9]</button>
+    <button class="dbg-btn" onclick="dumpCanvasMetrics()">Canvas metrics</button>
+    <button class="dbg-btn" onclick="fireTestClick()">Synthetic click (center)</button>
+    <button class="dbg-btn" onclick="clearLog()">Clear log</button>
+  </div>
+  <div id="debug-summary">
+    <span id="s-init"   class="unkn">① Init         — waiting</span>
+    <span id="s-canvas" class="unkn">② Canvas       — waiting</span>
+    <span id="s-image"  class="unkn">③ Image load   — waiting</span>
+    <span id="s-listen" class="unkn">④ Listeners    — waiting</span>
+    <span id="s-ptr"    class="unkn">⑤ Pointerdown  — not yet fired</span>
+    <span id="s-coord"  class="unkn">⑥ Coordinates  — not yet mapped</span>
+    <span id="s-paint"  class="unkn">⑦ Paint()      — not yet called</span>
+    <span id="s-redraw" class="unkn">⑧ Redraw()     — not yet called</span>
+    <span id="s-mapchk" class="unkn">⑨ regionMap    — not yet written</span>
+  </div>
+</div>
+
+<div id="flash"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// DEBUG INFRASTRUCTURE
+// ═══════════════════════════════════════════════════════════════════════════
+
+var logEl  = document.getElementById('debug-log');
+var logBuf = [];           // cap at 200 entries to avoid DOM bloat
+var pointerdownCount = 0;
+var paintCallCount   = 0;
+var redrawCallCount  = 0;
+
+function dbg(category, msg) {
+  var entry = '[' + category.toUpperCase().padEnd(7) + '] ' + msg;
+  console.log(entry);
+  var div = document.createElement('div');
+  div.className = 'log-entry log-' + category;
+  div.textContent = entry;
+  logEl.appendChild(div);
+  logBuf.push(div);
+  if (logBuf.length > 200) { logEl.removeChild(logBuf.shift()); }
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setSummary(id, cls, text) {
+  var el = document.getElementById(id);
+  el.className = cls;
+  el.textContent = text;
+}
+
+function clearLog() { logEl.innerHTML = ''; logBuf = []; }
+
+// Global error trap — catches any exception before listeners are attached
+window.addEventListener('error', function(e) {
+  dbg('error', 'UNCAUGHT: ' + e.message + ' @ ' + e.filename + ':' + e.lineno);
+  setSummary('s-init', 'fail', '① Init — UNCAUGHT EXCEPTION: ' + e.message);
+});
+window.addEventListener('unhandledrejection', function(e) {
+  dbg('error', 'UNHANDLED PROMISE: ' + e.reason);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STAGE 1 — SCRIPT INITIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+dbg('init', 'script loaded');
+
+// Fake injected values — stand-ins for __SPRITE_B64__ etc. in production.
+// Using a 16×16 red square as the test sprite so the canvas has visible content.
+var SPRITE_W = 16;
+var SPRITE_H = 16;
+// Build a minimal 16×16 red PNG inline (avoids needing __SPRITE_B64__ injection)
+var SPRITE_SRC = (function() {
+  var c = document.createElement('canvas');
+  c.width = 16; c.height = 16;
+  var x = c.getContext('2d');
+  x.fillStyle = '#c084fc';  // purple sprite body
+  x.fillRect(4, 0, 8, 4);   // head
+  x.fillStyle = '#818cf8';
+  x.fillRect(3, 4, 10, 6);  // torso
+  x.fillStyle = '#34d399';
+  x.fillRect(3, 10, 4, 6);  // left leg
+  x.fillRect(9, 10, 4, 6);  // right leg
+  return c.toDataURL();
+})();
+var RETURN_URL = window.location.href.split('?')[0];
+
+// Build a minimal AUTO_REGIONS for the 16×16 test sprite
+var AUTO_REGIONS = (function() {
+  var rows = [];
+  for (var y = 0; y < 16; y++) {
+    var row = [];
+    for (var x = 0; x < 16; x++) {
+      // Match the sprite pattern above
+      if (y < 4  && x >= 4 && x < 12) row.push(0);       // head
+      else if (y < 10 && x >= 3 && x < 13) row.push(1);  // torso
+      else if (y >= 10 && ((x >= 3 && x < 7) || (x >= 9 && x < 13))) row.push(2); // limbs
+      else row.push(null);
+    }
+    rows.push(row);
+  }
+  return rows;
+})();
+
+dbg('init', 'SPRITE_W=' + SPRITE_W + '  SPRITE_H=' + SPRITE_H);
+dbg('init', 'SPRITE_SRC type=' + (SPRITE_SRC.startsWith('data:') ? 'data-url ✓' : 'INVALID ✗'));
+dbg('init', 'AUTO_REGIONS rows=' + AUTO_REGIONS.length);
+dbg('init', 'RETURN_URL=' + RETURN_URL);
+
+setSummary('s-init', 'pass', '① Init — OK  (W=' + SPRITE_W + ' H=' + SPRITE_H + ')');
+
+// ═══════════════════════════════════════════════════════════════════════════
+// showError — must exist before any code that might call it
+// ═══════════════════════════════════════════════════════════════════════════
+
+function showError(msg) {
+  var el = document.getElementById('error-banner');
+  if (el) { el.textContent = '⚠ ' + msg; el.style.display = 'block'; }
+  dbg('error', msg);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REGION CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+var CODE = { head: 0, torso: 1, limb: 2, tuft: 3, erase: -1 };
+var REGION_RGBA = {
+  0: 'rgba(249,115,22,0.55)',
+  1: 'rgba(59,130,246,0.55)',
+  2: 'rgba(34,197,94,0.55)',
+  3: 'rgba(168,85,247,0.55)',
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════
+
+var regionMap    = new Array(SPRITE_W * SPRITE_H).fill(-1);
+var undoHistory  = [];  // renamed — shadows window.history
+var activeRegion = 'head';
+var brushSize    = 1;
+var painting     = false;
+var spriteReady  = false;
+
+dbg('init', 'regionMap initialized, length=' + regionMap.length
+    + ', all -1=' + regionMap.every(function(v){return v===-1;}));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STAGE 2 — CANVAS SETUP
+// ═══════════════════════════════════════════════════════════════════════════
+
+var cv  = document.getElementById('canvas');
+var ctx = cv ? cv.getContext('2d', { willReadFrequently: false }) : null;
+
+dbg('canvas', 'cv element: ' + (cv ? 'FOUND ✓' : 'NULL ✗'));
+dbg('canvas', 'ctx: ' + (ctx ? 'FOUND ✓' : 'NULL ✗'));
+
+if (!cv) {
+  showError('Canvas element not found');
+  setSummary('s-canvas', 'fail', '② Canvas — ELEMENT NOT FOUND');
+} else {
+  if (ctx) ctx.imageSmoothingEnabled = false;
+
+  var MAX_DISPLAY  = Math.min(440, window.innerWidth - 64);
+  var CANVAS_SCALE = Math.max(4, Math.min(16, Math.floor(MAX_DISPLAY / Math.max(SPRITE_W, SPRITE_H, 1))));
+  var CW = SPRITE_W * CANVAS_SCALE;
+  var CH = SPRITE_H * CANVAS_SCALE;
+
+  dbg('canvas', 'MAX_DISPLAY=' + MAX_DISPLAY + '  CANVAS_SCALE=' + CANVAS_SCALE);
+  dbg('canvas', 'CW=' + CW + '  CH=' + CH);
+
+  cv.width  = CW;
+  cv.height = CH;
+  cv.style.width  = CW + 'px';
+  cv.style.height = CH + 'px';
+
+  // Measure actual layout dimensions AFTER setting style
+  // Note: getBoundingClientRect() is synchronous but layout may not have
+  // flushed yet at this point in script execution.
+  var rect = cv.getBoundingClientRect();
+  dbg('canvas', 'cv.width (internal)=' + cv.width + '  cv.height=' + cv.height);
+  dbg('canvas', 'getBoundingClientRect at setup: w=' + rect.width.toFixed(1)
+      + ' h=' + rect.height.toFixed(1));
+
+  if (rect.width === 0) {
+    dbg('warn', 'BoundingRect width=0 at setup time — layout not flushed yet. '
+        + 'This is normal; rect will be correct by the time a click fires.');
+  }
+
+  // KEY DIAGNOSTIC: Does cv.style.width == computed layout width?
+  // If they differ, pixelAt() will mis-map coordinates.
+  var computedW = parseFloat(window.getComputedStyle(cv).width);
+  dbg('canvas', 'computedStyle.width=' + computedW.toFixed(1)
+      + ' vs cv.style.width=' + CW
+      + (Math.abs(computedW - CW) < 1 ? ' → MATCH ✓' : ' → MISMATCH ✗ (CSS shrinkage active)'));
+
+  setSummary('s-canvas', 'pass',
+    '② Canvas — OK  (internal ' + CW + '×' + CH
+    + '  layout ' + rect.width.toFixed(0) + '×' + rect.height.toFixed(0)
+    + '  scale=' + CANVAS_SCALE + ')');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STAGE 3 — IMAGE LOAD
+// ═══════════════════════════════════════════════════════════════════════════
+
+dbg('image', 'creating Image(), setting src…');
+
+var spriteImg = new Image();
+
+spriteImg.onload = function() {
+  spriteReady = true;
+  dbg('image', 'onload fired ✓  naturalW=' + spriteImg.naturalWidth
+      + '  naturalH=' + spriteImg.naturalHeight);
+
+  // Apply auto-regions into regionMap — THIS IS THE ORIGINAL CODE'S BEHAVIOR
+  var autoPixelsApplied = 0;
+  if (AUTO_REGIONS) {
+    try {
+      for (var y = 0; y < SPRITE_H; y++) {
+        for (var x = 0; x < SPRITE_W; x++) {
+          var v = AUTO_REGIONS[y] && AUTO_REGIONS[y][x];
+          if (v !== null && v !== undefined && v >= 0) {
+            regionMap[y * SPRITE_W + x] = v;
+            autoPixelsApplied++;
+          }
+        }
+      }
+    } catch (e) {
+      showError('Could not apply auto-regions: ' + e.message);
+    }
+  }
+
+  dbg('image', 'auto-regions applied to regionMap: ' + autoPixelsApplied + ' pixels');
+  dbg('image', 'regionMap sample after auto-fill [0..9]: ['
+      + regionMap.slice(0, 10).join(', ') + ']');
+
+  // CRITICAL DIAGNOSTIC: if autoPixelsApplied > 0, then regionMap is pre-filled.
+  // Any subsequent brush stroke that writes the SAME code will produce no visible
+  // change because the color was already painted at identical opacity.
+  if (autoPixelsApplied > 0) {
+    dbg('warn', 'AUTO-FILL PRE-POPULATES regionMap with ' + autoPixelsApplied
+        + ' values. A brush stroke writing the same region code to a pre-filled '
+        + 'pixel will call redraw() but produce NO visible canvas change. '
+        + 'This is the bug.');
+  }
+
+  setSummary('s-image', 'pass',
+    '③ Image load — OK  (natural ' + spriteImg.naturalWidth + '×'
+    + spriteImg.naturalHeight + '  auto-filled ' + autoPixelsApplied + ' px)');
+
+  redraw();
+  updateStatus();
+};
+
+spriteImg.onerror = function() {
+  dbg('error', 'Image.onerror fired — src could not be loaded');
+  setSummary('s-image', 'fail', '③ Image load — FAILED (onerror)');
+  showError('Sprite image failed to load.');
+};
+
+dbg('image', 'src assignment starting…');
+spriteImg.src = SPRITE_SRC;
+dbg('image', 'src assigned (load may be async or sync for data-urls)');
+dbg('image', 'spriteReady immediately after src assignment: ' + spriteReady
+    + (spriteReady ? ' (sync load ✓)' : ' (async — onload pending)'));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STAGE 6 — REDRAW (defined before listeners so it can be called from onload)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function redraw() {
+  redrawCallCount++;
+  dbg('redraw', 'redraw() #' + redrawCallCount + ' — spriteReady=' + spriteReady);
+
+  if (!ctx) { dbg('error', 'redraw: ctx is null, aborting'); return; }
+
+  ctx.clearRect(0, 0, CW, CH);
+
+  if (spriteReady) {
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(spriteImg, 0, 0, CW, CH);
+    dbg('redraw', 'drawImage called ✓');
+  } else {
+    dbg('warn', 'redraw: sprite not ready, skipping drawImage');
+  }
+
+  var S = CANVAS_SCALE;
+  var overlayCount = 0;
+  for (var y = 0; y < SPRITE_H; y++) {
+    for (var x = 0; x < SPRITE_W; x++) {
+      var v = regionMap[y * SPRITE_W + x];
+      if (v < 0) continue;
+      ctx.fillStyle = REGION_RGBA[v] || 'rgba(255,255,255,0.4)';
+      ctx.fillRect(x * S, y * S, S, S);
+      overlayCount++;
+    }
+  }
+  dbg('redraw', 'overlay rects drawn: ' + overlayCount);
+
+  setSummary('s-redraw', 'pass', '⑧ Redraw() — called ' + redrawCallCount + 'x, last overlay=' + overlayCount + ' rects');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STAGE 4 — LISTENER ATTACHMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+if (cv) {
+
+  dbg('canvas', 'attaching pointer event listeners…');
+
+  cv.addEventListener('pointerdown', function(e) {
+    pointerdownCount++;
+
+    // Probe: does the guard condition fire incorrectly?
+    var guardWouldSkip = (e.button !== undefined && e.button !== 0 && e.pointerType === 'mouse');
+    dbg('pointer', 'pointerdown #' + pointerdownCount
+        + '  clientX=' + e.clientX.toFixed(1)
+        + '  clientY=' + e.clientY.toFixed(1)
+        + '  button=' + e.button
+        + '  pointerType=' + e.pointerType
+        + '  guardWouldSkip=' + guardWouldSkip);
+
+    if (guardWouldSkip) {
+      dbg('warn', 'Guard fired — returning early (non-primary mouse button)');
+      return;
+    }
+
+    e.preventDefault();
+    try {
+      cv.setPointerCapture(e.pointerId);
+      dbg('pointer', 'setPointerCapture succeeded  pointerId=' + e.pointerId);
+    } catch (err) {
+      dbg('warn', 'setPointerCapture threw: ' + err.message
+          + ' — continuing (capture is optional)');
+    }
+
+    // Probe: canvas rect at the moment of the click
+    var r = cv.getBoundingClientRect();
+    dbg('pointer', 'getBoundingClientRect at click: x=' + r.left.toFixed(1)
+        + ' y=' + r.top.toFixed(1)
+        + ' w=' + r.width.toFixed(1)
+        + ' h=' + r.height.toFixed(1));
+
+    if (r.width === 0 || r.height === 0) {
+      dbg('error', 'BoundingRect is zero-size at click time — pixelAt will return [0,0]');
+      setSummary('s-coord', 'fail', '⑥ Coordinates — ZERO-SIZE RECT at click time');
+    }
+
+    snapshot();
+    painting = true;
+
+    setSummary('s-ptr', 'pass',
+      '⑤ Pointerdown — fired ' + pointerdownCount + 'x  (button=' + e.button
+      + ' type=' + e.pointerType + ')');
+
+    var p = pixelAt(e.clientX, e.clientY);
+    paint(p[0], p[1]);
+  });
+
+  cv.addEventListener('pointermove', function(e) {
+    if (!painting) return;
+    e.preventDefault();
+    var p = pixelAt(e.clientX, e.clientY);
+    paint(p[0], p[1]);
+  });
+
+  cv.addEventListener('pointerup', function(e) {
+    if (painting) dbg('pointer', 'pointerup — painting=false');
+    painting = false;
+    try { cv.releasePointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  cv.addEventListener('pointercancel', function() {
+    dbg('warn', 'pointercancel fired — painting interrupted');
+    painting = false;
+  });
+
+  cv.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+  dbg('canvas', 'all listeners attached ✓');
+  setSummary('s-listen', 'pass', '④ Listeners — attached ✓');
+
+} else {
+  setSummary('s-listen', 'fail', '④ Listeners — SKIPPED (cv is null)');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STAGE 5 — COORDINATE MAPPING
+// ═══════════════════════════════════════════════════════════════════════════
+
+function pixelAt(clientX, clientY) {
+  var r  = cv.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) {
+    dbg('error', 'pixelAt: rect is zero — returning [0,0]');
+    return [0, 0];
+  }
+
+  // Original formula: (offset * scaleX) / CANVAS_SCALE
+  var scaleX = cv.width  / r.width;
+  var scaleY = cv.height / r.height;
+  var sx_orig = Math.floor((clientX - r.left) * scaleX / CANVAS_SCALE);
+  var sy_orig = Math.floor((clientY - r.top)  * scaleY / CANVAS_SCALE);
+
+  // Simplified formula: offset / rect_size * SPRITE_DIM (algebraically equivalent
+  // when canvas is not CSS-shrunk; differs when CSS shrinkage is active)
+  var sx_simp = Math.floor((clientX - r.left) / r.width  * SPRITE_W);
+  var sy_simp = Math.floor((clientY - r.top)  / r.height * SPRITE_H);
+
+  dbg('coord',
+    'clientXY=(' + clientX.toFixed(1) + ',' + clientY.toFixed(1) + ')'
+    + '  rect=(' + r.left.toFixed(1) + ',' + r.top.toFixed(1) + ')'
+    + '  rectSize=' + r.width.toFixed(1) + '×' + r.height.toFixed(1)
+    + '  cv.size=' + cv.width + '×' + cv.height
+    + '  scaleXY=(' + scaleX.toFixed(3) + ',' + scaleY.toFixed(3) + ')'
+    + '  CANVAS_SCALE=' + CANVAS_SCALE);
+
+  dbg('coord',
+    'ORIGINAL formula → (' + sx_orig + ',' + sy_orig + ')'
+    + '  SIMPLIFIED formula → (' + sx_simp + ',' + sy_simp + ')'
+    + (sx_orig === sx_simp && sy_orig === sy_simp ? '  [AGREE ✓]' : '  [DISAGREE ✗ — CSS shrinkage is active]'));
+
+  var sx = Math.max(0, Math.min(SPRITE_W - 1, sx_orig));
+  var sy = Math.max(0, Math.min(SPRITE_H - 1, sy_orig));
+
+  setSummary('s-coord', 'pass',
+    '⑥ Coordinates — last click → sprite pixel (' + sx + ',' + sy + ')'
+    + (sx_orig === sx_simp ? '' : ' ⚠ formula mismatch'));
+
+  return [sx, sy];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STAGE 7 — PAINT
+// ═══════════════════════════════════════════════════════════════════════════
+
+function paint(px, py) {
+  paintCallCount++;
+  var code = activeRegion === 'erase' ? -1 : CODE[activeRegion];
+  var idx  = py * SPRITE_W + px;
+
+  var prevValue   = regionMap[idx];
+  var sameAsAuto  = (AUTO_REGIONS && AUTO_REGIONS[py] && AUTO_REGIONS[py][px] === code);
+  var wasPreFilled = (prevValue === code);
+
+  dbg('paint',
+    'paint() #' + paintCallCount
+    + '  px=' + px + ' py=' + py
+    + '  code=' + code + ' (' + activeRegion + ')'
+    + '  regionMap[' + idx + '] was=' + prevValue + ' → ' + code);
+
+  // THE KEY DIAGNOSTIC:
+  if (wasPreFilled && sameAsAuto) {
+    dbg('warn',
+      'SILENT NO-OP: regionMap[' + idx + '] already=' + code
+      + ' (same as auto-fill). redraw() will run but canvas '
+      + 'will look IDENTICAL because the overlay color does not change. '
+      + 'This is the visual failure mode.');
+    setSummary('s-mapchk', 'warn',
+      '⑨ regionMap — pixel (' + px + ',' + py + ') already=' + code
+      + ' (pre-filled by auto). Brush is a visual no-op here.');
+  } else if (wasPreFilled) {
+    dbg('paint', 'pixel was pre-filled with DIFFERENT code (' + prevValue
+        + ') — overwriting with ' + code + '. Change WILL be visible.');
+    setSummary('s-mapchk', 'pass',
+      '⑨ regionMap — pixel (' + px + ',' + py + ') ' + prevValue + '→' + code + ' (visible change)');
+  } else {
+    setSummary('s-mapchk', 'pass',
+      '⑨ regionMap — pixel (' + px + ',' + py + ') -1→' + code + ' (newly painted)');
+  }
+
+  var half = Math.floor(brushSize / 2);
+  for (var dy = -half; dy <= half; dy++) {
+    for (var dx = -half; dx <= half; dx++) {
+      var nx = px + dx, ny = py + dy;
+      if (nx >= 0 && nx < SPRITE_W && ny >= 0 && ny < SPRITE_H) {
+        regionMap[ny * SPRITE_W + nx] = code;
+      }
+    }
+  }
+
+  setSummary('s-paint', 'pass',
+    '⑦ Paint() — called ' + paintCallCount + 'x  last=(' + px + ',' + py + ') code=' + code);
+
+  redraw();
+  updateStatus();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CONTROLS (unchanged from original)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function snapshot() {
+  undoHistory.push(regionMap.slice());
+  if (undoHistory.length > 50) undoHistory.shift();
+  document.getElementById('undo-btn').disabled = false;
+}
+
+function setRegion(r) {
+  activeRegion = r;
+  dbg('init', 'activeRegion → ' + r);
+  document.querySelectorAll('.brush-btn').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.region === r);
+  });
+}
+
+function setSize(s) {
+  brushSize = s;
+  document.querySelectorAll('.size-btn').forEach(function(b) {
+    b.classList.toggle('active', parseInt(b.dataset.sz) === s);
+  });
+}
+
+function undo() {
+  if (!undoHistory.length) return;
+  regionMap = Array.from(undoHistory.pop());
+  redraw();
+  updateStatus();
+  document.getElementById('undo-btn').disabled = undoHistory.length === 0;
+}
+
+function clearAll() {
+  snapshot();
+  regionMap = new Array(SPRITE_W * SPRITE_H).fill(-1);
+  redraw();
+  updateStatus();
+}
+
+function applyAutoDetect() {
+  if (!AUTO_REGIONS) return;
+  snapshot();
+  for (var y = 0; y < SPRITE_H; y++) {
+    for (var x = 0; x < SPRITE_W; x++) {
+      var v = AUTO_REGIONS[y] && AUTO_REGIONS[y][x];
+      regionMap[y * SPRITE_W + x] = (v !== null && v !== undefined && v >= 0) ? v : -1;
+    }
+  }
+  redraw();
+  updateStatus();
+}
+
+function updateStatus() {
+  var painted = 0;
+  for (var i = 0; i < regionMap.length; i++) if (regionMap[i] >= 0) painted++;
+  document.getElementById('cov-text').textContent =
+    'painted: ' + painted + ' / ' + regionMap.length + ' px';
+}
+
+function submitRegions() {
+  dbg('init', 'submitRegions called');
+  try {
+    var packed = new Uint8Array(4 + regionMap.length);
+    packed[0] = (SPRITE_W >> 8) & 0xff;
+    packed[1] =  SPRITE_W       & 0xff;
+    packed[2] = (SPRITE_H >> 8) & 0xff;
+    packed[3] =  SPRITE_H       & 0xff;
+    for (var i = 0; i < regionMap.length; i++) {
+      packed[i + 4] = (regionMap[i] + 1) & 0xff;
+    }
+    var binary = '';
+    var chunk  = 8192;
+    for (var j = 0; j < packed.length; j += chunk) {
+      binary += String.fromCharCode.apply(null, packed.subarray(j, j + chunk));
+    }
+    var b64 = btoa(binary);
+    dbg('init', 'encoded regionMap to base64 length=' + b64.length);
+    dbg('init', 'would navigate to: ' + RETURN_URL + '?regions=' + b64.slice(0,40) + '…');
+
+    var btn = document.getElementById('submit-btn');
+    btn.textContent = '✓ (debug — navigation suppressed)';
+    btn.classList.add('success');
+  } catch (e) {
+    showError('Failed to encode regions: ' + e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DEBUG UTILITY FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function dumpMapSample() {
+  dbg('mapchk', 'regionMap[0..15]: [' + regionMap.slice(0, 16).join(', ') + ']');
+  var nonNeg = regionMap.filter(function(v){return v >= 0;}).length;
+  dbg('mapchk', 'total non-(-1) entries: ' + nonNeg + ' / ' + regionMap.length);
+}
+
+function dumpCanvasMetrics() {
+  var r = cv.getBoundingClientRect();
+  dbg('canvas', '--- Canvas metrics at time of dump ---');
+  dbg('canvas', 'cv.width=' + cv.width + '  cv.height=' + cv.height);
+  dbg('canvas', 'cv.style.width=' + cv.style.width + '  cv.style.height=' + cv.style.height);
+  dbg('canvas', 'getBoundingClientRect: left=' + r.left.toFixed(2)
+      + ' top=' + r.top.toFixed(2)
+      + ' width=' + r.width.toFixed(2)
+      + ' height=' + r.height.toFixed(2));
+  var cStyle = window.getComputedStyle(cv);
+  dbg('canvas', 'computedStyle width=' + cStyle.width + '  height=' + cStyle.height);
+  dbg('canvas', 'CANVAS_SCALE=' + CANVAS_SCALE);
+  var scaleX = cv.width / r.width;
+  var scaleY = cv.height / r.height;
+  dbg('canvas', 'derived scaleX=' + scaleX.toFixed(4) + '  scaleY=' + scaleY.toFixed(4));
+  if (Math.abs(scaleX - 1) > 0.01) {
+    dbg('warn', 'scaleX != 1.0 → CSS has shrunk the canvas below its internal size. '
+        + 'Original pixelAt formula will mis-map coordinates by factor ' + scaleX.toFixed(2));
+  }
+}
+
+function fireTestClick() {
+  // Synthesise a click at the center of the canvas
+  var r = cv.getBoundingClientRect();
+  var cx = r.left + r.width  / 2;
+  var cy_v = r.top  + r.height / 2;
+  dbg('pointer', '--- Synthetic click at canvas center (' + cx.toFixed(1) + ',' + cy_v.toFixed(1) + ') ---');
+  var evt = new PointerEvent('pointerdown', {
+    bubbles: true, cancelable: true,
+    clientX: cx, clientY: cy_v,
+    button: 0, buttons: 1,
+    pointerType: 'mouse', pointerId: 1,
+  });
+  cv.dispatchEvent(evt);
+  var up = new PointerEvent('pointerup', {
+    bubbles: true, cancelable: true,
+    clientX: cx, clientY: cy_v,
+    button: 0, buttons: 0,
+    pointerType: 'mouse', pointerId: 1,
+  });
+  cv.dispatchEvent(up);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// KEYBOARD SHORTCUTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+document.addEventListener('keydown', function(e) {
+  if (e.target && e.target.tagName === 'INPUT') return;
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); return; }
+  var map = { h: 'head', t: 'torso', l: 'limb', u: 'tuft', e: 'erase' };
+  if (map[e.key]) setRegion(map[e.key]);
+  if (e.key === '1') setSize(1);
+  if (e.key === '2') setSize(2);
+  if (e.key === '3') setSize(3);
+});
+
+dbg('init', '--- end of synchronous script execution ---');
+</script>
+</body>
+</html>
