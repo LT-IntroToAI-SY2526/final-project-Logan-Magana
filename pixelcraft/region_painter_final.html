@@ -35,7 +35,7 @@ h1 {
 .subtitle { font-size: 0.8rem; color: #6b6b8a; margin-bottom: 20px; }
 
 #app {
-  width: 100%; max-width: 520px;
+  width: 100%; max-width: 700px;
   display: flex; flex-direction: column; gap: 10px;
 }
 
@@ -114,7 +114,7 @@ h1 {
   cursor: crosshair;
   display: block;
   max-width: 100%;
-  max-height: 480px;
+  max-height: 640px;
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
@@ -183,9 +183,9 @@ h1 {
     <div class="sep"></div>
     <span class="tool-label">Size</span>
     <div id="size-btns">
-      <button class="size-btn active" data-sz="1" onclick="setSize(1)">1</button>
-      <button class="size-btn"        data-sz="2" onclick="setSize(2)">2</button>
-      <button class="size-btn"        data-sz="3" onclick="setSize(3)">3</button>
+      <button class="size-btn"        data-sz="1" onclick="setSize(1)">1</button>
+      <button class="size-btn active" data-sz="2" onclick="setSize(2)">2</button>
+      <button class="size-btn"        data-sz="4" onclick="setSize(4)">4</button>
     </div>
     <div class="sep"></div>
     <button class="icon-btn" id="undo-btn"  onclick="undo()"     title="Undo (Ctrl+Z)" disabled>↩</button>
@@ -215,7 +215,7 @@ h1 {
     </div>
   </div>
 
-  <div id="shortcuts">H=head · T=torso · L=limbs · U=tuft · E=erase · 1/2/3=brush · Ctrl+Z=undo</div>
+  <div id="shortcuts">H=head · T=torso · L=limbs · U=tuft · E=erase · 1/2/3=brush size · Ctrl+Z=undo</div>
 </div>
 
 <div id="flash"></div>
@@ -267,7 +267,7 @@ var regionMap    = new Array(SPRITE_W * SPRITE_H).fill(-1);  // user edits
 var autoMap      = new Array(SPRITE_W * SPRITE_H).fill(-1);  // auto suggestions
 var undoHistory  = [];  // renamed from 'history' — 'var history' shadows window.history, causing history.push() to throw
 var activeRegion = 'head';
-var brushSize    = 1;
+var brushSize    = 2;
 var painting     = false;
 var spriteReady  = false;
 
@@ -277,8 +277,13 @@ if (!cv) { showError('Canvas element not found — page may have failed to load.
 var ctx = cv ? cv.getContext('2d', { willReadFrequently: false }) : null;
 if (ctx) ctx.imageSmoothingEnabled = false;
 
-var MAX_DISPLAY  = Math.min(440, window.innerWidth - 64);
-var CANVAS_SCALE = Math.max(4, Math.min(16, Math.floor(MAX_DISPLAY / Math.max(SPRITE_W, SPRITE_H, 1))));
+// Use as much horizontal space as available (up to 640px) so each sprite
+// pixel maps to enough screen pixels for the brush to feel natural.
+// For a 64×64 sprite this gives CANVAS_SCALE=9 at 600px wide vs the old
+// CANVAS_SCALE=6 at 440px — each grid cell grows from 6→9px, making
+// brushSize=1 paint one clearly visible sprite-pixel cell.
+var MAX_DISPLAY  = Math.min(640, window.innerWidth - 32);
+var CANVAS_SCALE = Math.max(8, Math.min(24, Math.floor(MAX_DISPLAY / Math.max(SPRITE_W, SPRITE_H, 1))));
 var CW = SPRITE_W * CANVAS_SCALE;
 var CH = SPRITE_H * CANVAS_SCALE;
 if (cv) {
@@ -381,11 +386,17 @@ function pixelAt(clientX, clientY) {
 
 // ── Paint ─────────────────────────────────────────────────────────────────────
 function paint(px, py) {
-  var code = activeRegion === 'erase' ? -1 : CODE[activeRegion];
-  var half = Math.floor(brushSize / 2);
-  for (var dy = -half; dy <= half; dy++) {
-    for (var dx = -half; dx <= half; dx++) {
-      var nx = px + dx, ny = py + dy;
+  var code   = activeRegion === 'erase' ? -1 : CODE[activeRegion];
+  // floor(brushSize/2) centers the brush on the cursor for both odd and even sizes:
+  //   size 1 → offset 0 → paints px..px       (cursor is the only cell)
+  //   size 2 → offset 1 → paints px-1..px     (cursor is right cell, straddles boundary)
+  //   size 4 → offset 2 → paints px-2..px+1   (cursor sits between the two middle cells)
+  var start  = px - Math.floor(brushSize / 2);
+  var startY = py - Math.floor(brushSize / 2);
+  for (var dy = 0; dy < brushSize; dy++) {
+    for (var dx = 0; dx < brushSize; dx++) {
+      var nx = start  + dx;
+      var ny = startY + dy;
       if (nx >= 0 && nx < SPRITE_W && ny >= 0 && ny < SPRITE_H) {
         regionMap[ny * SPRITE_W + nx] = code;
       }
@@ -547,7 +558,7 @@ document.addEventListener('keydown', function(e) {
   if (map[e.key]) setRegion(map[e.key]);
   if (e.key === '1') setSize(1);
   if (e.key === '2') setSize(2);
-  if (e.key === '3') setSize(3);
+  if (e.key === '3') setSize(4);
 });
 </script>
 </body>
